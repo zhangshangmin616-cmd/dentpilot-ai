@@ -744,7 +744,7 @@ def render_clinical_case_mode(default_text: str):
             <div class="eyebrow">AI 临床病例训练</div>
             <h1 class="hero-title">Clinical Case Training</h1>
             <p class="hero-subtitle">根据课程内容生成牙科/医学临床病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。</p>
-            <p class="hero-copy">????????????????????????????????</p>
+            <p class="hero-copy">完成口试或病例训练后，系统会自动分析你的薄弱知识点，并生成个性化复习计划。</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -909,7 +909,7 @@ def render_weakness_analysis_mode():
             <div class="eyebrow">AI 弱点分析</div>
             <h1 class="hero-title">Weakness Analysis</h1>
             <p class="hero-subtitle">根据口试和临床病例训练记录，找出强项、弱点、可能原因，并生成 3 天复习计划。</p>
-            <p class="hero-copy">?????????????????????????????????</p>
+            <p class="hero-copy">完成口试或病例训练后，系统会自动分析你的薄弱知识点，并生成个性化复习计划。</p>
         </section>
         """,
         unsafe_allow_html=True,
