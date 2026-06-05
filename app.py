@@ -32,8 +32,7 @@ from oral_exam import (
 from voice_tools import (
     browser_tts_button,
     generate_examiner_audio,
-    premium_stt_configured,
-    premium_tts_configured,
+    get_secret,
     transcribe_student_audio,
 )
 from weakness_analysis import (
@@ -44,6 +43,14 @@ from weakness_analysis import (
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+
+
+def premium_tts_configured() -> bool:
+    return bool(get_secret("ELEVENLABS_API_KEY") and get_secret("ELEVENLABS_VOICE_ID"))
+
+
+def premium_stt_configured() -> bool:
+    return bool(get_secret("ELEVENLABS_API_KEY"))
 
 
 def extract_pdf_text(uploaded_file) -> tuple[str, int]:
