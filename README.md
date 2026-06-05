@@ -1,90 +1,75 @@
-# MedStudy CN MVP
+# DentPilot AI
 
-这是一个给零基础练手的最小可用版本：
+DentPilot AI is a Streamlit study-assistance app for Chinese students in English-taught dental and medical programs.
 
-- 粘贴英文医学/口腔课程内容
-- 自动提取内置术语
-- 生成中文讲解
-- 生成 Quiz
-- 生成 Anki CSV 卡片
+Current features:
+- Study Pack generation with Chinese explanations, glossary, quiz, Anki CSV, and PDF export
+- Text-based AI Oral Exam
+- AI Clinical Case Training
+- Weakness Analysis
+- Optional voice tools
+- Realtime Oral Exam with ElevenLabs Conversational AI Widget
 
-当前版本是本地演示版，不需要 API Key。它用 `glossary.py` 里的术语库做规则生成。后续可以接入合法可用的 AI 模型供应商。
-
-## 1. 安装 Python
-
-去 Python 官网下载安装 Python 3。
-
-安装时如果是 Windows，请勾选 “Add Python to PATH”。
-
-## 2. 打开终端
-
-Windows：打开 PowerShell。
-
-macOS：打开 Terminal。
-
-进入项目目录，例如：
-
-```bash
-cd medstudy_cn_mvp
-```
-
-## 3. 创建虚拟环境
-
-Windows：
+## Run Locally
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-```
-
-macOS / Linux：
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-## 4. 安装依赖
-
-```bash
 pip install -r requirements.txt
-```
-
-## 5. 启动网站
-
-```bash
 streamlit run app.py
 ```
 
-然后浏览器会打开：
+Then open:
 
 ```text
 http://localhost:8501
 ```
 
-## 6. 怎么修改术语库
+## Environment Variables
 
-打开 `glossary.py`，按下面格式继续添加：
+For DeepSeek study pack, oral exam, clinical case, and weakness analysis:
 
-```python
-"new term": {
-    "zh": "中文术语",
-    "definition": "English definition.",
-    "explanation_zh": "中文解释。",
-    "category": "Dentistry / Your Category",
-},
+```env
+DEEPSEEK_API_KEY=your_deepseek_key
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
-## 7. 下一步开发建议
+For optional old round-based voice tools:
 
-第一阶段：把这个本地 app 跑起来。
+```env
+ELEVENLABS_API_KEY=your_elevenlabs_key
+ELEVENLABS_VOICE_ID=your_voice_id
+ELEVENLABS_TTS_MODEL=eleven_multilingual_v2
+ELEVENLABS_STT_MODEL=scribe_v2
+```
 
-第二阶段：增加更多口腔术语。
+## Realtime Oral Exam Setup
 
-第三阶段：接入 AI 模型，让它真正生成更自然的中文讲解和题目。
+1. Create an ElevenLabs Conversational AI Agent.
+2. Copy the Agent ID.
+3. Add to local `.env`:
 
-第四阶段：增加登录、课程文件夹、PDF 上传和付费。
+```env
+ELEVENLABS_AGENT_ID=agent_xxxxxxxxxxxxx
+```
 
-## 8. 合规边界
+4. On Streamlit Cloud, add the same value in Secrets:
 
-这是学习辅助软件，不是考试作弊、代写、VPN、绕过学校系统或医疗诊断工具。
+```toml
+ELEVENLABS_AGENT_ID = "agent_xxxxxxxxxxxxx"
+```
+
+The Realtime Oral Exam page uses the ElevenLabs Conversational AI Widget. It does not require `ELEVENLABS_API_KEY` in the Streamlit app.
+
+## Recommended ElevenLabs Agent System Prompt
+
+Use the prompt in `ELEVENLABS_AGENT_PROMPT.md` when creating your ElevenLabs Conversational AI Agent.
+
+The app also passes dynamic variables to the widget:
+- `course_context`
+- `subject`
+- `examiner_style`
+
+## Safety Boundary
+
+DentPilot AI is for study and exam preparation only. It is not a real patient diagnosis tool and does not replace a licensed clinician, teacher, or professor.

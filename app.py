@@ -29,6 +29,7 @@ from oral_exam import (
     generate_oral_question,
     grade_oral_answer,
 )
+from realtime_oral_exam import render_realtime_oral_exam_page
 from voice_tools import (
     browser_tts_button,
     generate_examiner_audio,
@@ -1073,12 +1074,13 @@ with st.sidebar:
 
     mode = st.radio(
         "学习模式",
-        ["Study Pack", "AI Oral Exam", "Clinical Case", "Weakness Analysis"],
+        ["Study Pack", "AI Oral Exam", "Clinical Case", "Weakness Analysis", "Realtime Oral Exam"],
         format_func={
             "Study Pack": "Study Pack / 复习包",
             "AI Oral Exam": "AI Oral Exam / 口试模拟",
             "Clinical Case": "Clinical Case / 临床病例",
             "Weakness Analysis": "Weakness Analysis / 弱点分析",
+            "Realtime Oral Exam": "🎙️ Realtime Oral Exam / 实时口试",
         }.get,
     )
 
@@ -1113,12 +1115,19 @@ with st.sidebar:
 
         st.markdown("### Phase 2")
         st.markdown("- 纯文本模式\n- 不接入语音\n- 适合新手练临床思维\n- 保存最近病例训练记录")
-    else:
+    elif mode == "Weakness Analysis":
         st.markdown("### 弱点分析")
         st.write("综合口试和临床病例记录，分析强项、弱点和下一步学习计划。")
 
         st.markdown("### Phase 3")
         st.markdown("- 读取当前会话记录\n- 生成弱点总结\n- 给出 3 天复习计划\n- 推荐下一步练习方向")
+
+    else:
+        st.markdown("### 实时口试")
+        st.write("使用 ElevenLabs Conversational AI Widget，和 AI dental professor 进行实时英文口试。")
+
+        st.markdown("### Voice")
+        st.markdown("- 不使用旧的录音转写流程\n- 不需要 ElevenLabs API Key\n- 需要配置 ELEVENLABS_AGENT_ID\n- 适合真实口试节奏练习")
 
     st.markdown("---")
     if os.getenv("DEEPSEEK_API_KEY"):
@@ -1137,6 +1146,10 @@ if mode == "Clinical Case":
 
 if mode == "Weakness Analysis":
     render_weakness_analysis_mode()
+    st.stop()
+
+if mode == "Realtime Oral Exam":
+    render_realtime_oral_exam_page()
     st.stop()
 
 
