@@ -29,7 +29,13 @@ from oral_exam import (
     generate_oral_question,
     grade_oral_answer,
 )
-from voice_tools import browser_tts_button, generate_examiner_audio, transcribe_student_audio
+from voice_tools import (
+    browser_tts_button,
+    generate_examiner_audio,
+    premium_stt_configured,
+    premium_tts_configured,
+    transcribe_student_audio,
+)
 from weakness_analysis import (
     WeaknessAnalysisConfigError,
     WeaknessAnalysisJSONError,
@@ -523,6 +529,7 @@ def render_oral_grade_result(result: dict):
 
 def render_oral_exam_mode(default_text: str):
     st.session_state.setdefault("oral_exam_history", [])
+    st.session_state.setdefault("oral_exam_rounds", [])
 
     st.markdown(
         """
@@ -544,6 +551,14 @@ def render_oral_exam_mode(default_text: str):
     )
 
     oral_default_text = st.session_state.get("last_course_text", default_text)
+    voice_col_1, voice_col_2 = st.columns(2)
+    voice_col_1.info(
+        "Premium TTS: configured" if premium_tts_configured() else "Premium TTS: not configured"
+    )
+    voice_col_2.info(
+        "Speech-to-text: configured" if premium_stt_configured() else "Speech-to-text: not configured"
+    )
+
     oral_course_text = st.text_area(
         "Course Text",
         value=oral_default_text,
@@ -576,6 +591,7 @@ def render_oral_exam_mode(default_text: str):
                     st.session_state["oral_student_transcript"] = ""
                     st.session_state["oral_audio_signature"] = ""
                     st.session_state["oral_voice_used"] = False
+                    st.session_state["oral_exam_rounds"] = []
                     st.session_state["last_course_text"] = oral_course_text
                 st.success("口试题已生成。")
             except OralExamConfigError as exc:
@@ -674,6 +690,7 @@ def render_oral_exam_mode(default_text: str):
                     }
                     st.session_state["oral_exam_history"].insert(0, attempt)
                     st.session_state["oral_exam_history"] = st.session_state["oral_exam_history"][:10]
+                    st.session_state["oral_exam_rounds"].append(attempt)
                 except OralExamConfigError as exc:
                     st.error(str(exc))
                 except OralExamJSONError as exc:
@@ -684,8 +701,35 @@ def render_oral_exam_mode(default_text: str):
 
     if st.session_state.get("oral_exam_result"):
         render_oral_grade_result(st.session_state["oral_exam_result"])
+        follow_up = st.session_state["oral_exam_result"].get("follow_up_question", "")
+        if follow_up and st.button("Continue With Follow-up Question", use_container_width=True):
+            st.session_state["oral_question_data"] = {
+                "question": follow_up,
+                "expected_points": [],
+                "must_mention_terms": [],
+                "difficulty": oral_difficulty,
+                "topic": st.session_state.get("oral_question_data", {}).get("topic", oral_subject),
+                "model_answer": "",
+            }
+            st.session_state["oral_exam_result"] = None
+            st.session_state["oral_examiner_audio"] = None
+            st.session_state["oral_student_transcript"] = ""
+            st.session_state["oral_audio_signature"] = ""
+            st.session_state["oral_voice_used"] = False
+            st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+    rounds = st.session_state.get("oral_exam_rounds", [])
+    if rounds:
+        st.markdown("### Current Oral Exam Session")
+        st.caption(f"{len(rounds)} round(s) completed in this oral exam session.")
+        for index, attempt in enumerate(rounds, start=1):
+            result = attempt.get("grading_result") or attempt.get("result", {})
+            with st.expander(f"Round {index}: {result.get('score', 0)}/100 ({result.get('level', '')})"):
+                st.markdown(f"**Question:** {attempt.get('question', '')}")
+                st.markdown(f"**Transcript:** {attempt.get('student_transcript') or attempt.get('answer', '')}")
+                st.markdown(f"**Feedback:** {result.get('chinese_feedback', '')}")
 
     st.markdown("### 最近口试记录")
     history = st.session_state.get("oral_exam_history", [])

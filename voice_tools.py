@@ -20,6 +20,14 @@ def get_secret(name, default=None):
     return value if value is not None else default
 
 
+def premium_tts_configured() -> bool:
+    return bool(get_secret("ELEVENLABS_API_KEY") and get_secret("ELEVENLABS_VOICE_ID"))
+
+
+def premium_stt_configured() -> bool:
+    return bool(get_secret("ELEVENLABS_API_KEY"))
+
+
 def generate_examiner_audio(text: str) -> bytes | None:
     api_key = get_secret("ELEVENLABS_API_KEY")
     voice_id = get_secret("ELEVENLABS_VOICE_ID")
