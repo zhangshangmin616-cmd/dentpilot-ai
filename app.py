@@ -744,7 +744,7 @@ def render_clinical_case_mode(default_text: str):
             <div class="eyebrow">AI 临床病例训练</div>
             <h1 class="hero-title">Clinical Case Training</h1>
             <p class="hero-subtitle">根据课程内容生成牙科/医学临床病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。</p>
-            <p class="hero-copy">Phase 2 仍然是纯文本模式，不加入语音功能。适合新手用结构化问题一步一步练临床思维。</p>
+            <p class="hero-copy">????????????????????????????????</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -909,7 +909,7 @@ def render_weakness_analysis_mode():
             <div class="eyebrow">AI 弱点分析</div>
             <h1 class="hero-title">Weakness Analysis</h1>
             <p class="hero-subtitle">根据口试和临床病例训练记录，找出强项、弱点、可能原因，并生成 3 天复习计划。</p>
-            <p class="hero-copy">Phase 3 会读取当前会话中的练习记录。请先完成至少一次口试或病例训练，再进行分析。</p>
+            <p class="hero-copy">?????????????????????????????????</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -919,7 +919,7 @@ def render_weakness_analysis_mode():
     st.markdown('<div class="section-label">练习记录</div>', unsafe_allow_html=True)
 
     metric_col_1, metric_col_2 = st.columns(2)
-    metric_col_1.metric("Oral Exam Attempts", len(oral_history))
+    metric_col_1.metric("Written Exam Attempts", len(oral_history))
     metric_col_2.metric("Clinical Case Attempts", len(clinical_history))
 
     if not oral_history and not clinical_history:
@@ -1012,50 +1012,16 @@ with st.sidebar:
         }.get,
     )
 
-    if mode == "Study Pack":
-        subject = st.selectbox(
-            "专业方向",
-            ["Dentistry", "General Medicine", "Anatomy", "Pathology", "Pharmacology", "Histology"],
-            format_func={
-                "Dentistry": "牙科学 / 口腔医学",
-                "General Medicine": "基础医学",
-                "Anatomy": "解剖学",
-                "Pathology": "病理学",
-                "Pharmacology": "药理学",
-                "Histology": "组织学",
-            }.get,
-        )
+    mode_descriptions = {
+        "Study Pack": "上传英文课件或 PDF，生成中文讲解、术语、Quiz、Anki 和 PDF 复习包。",
+        "AI Written Exam": "用英文答题，练习考点覆盖、表达结构和书面考试思路。",
+        "Clinical Case": "通过临床病例训练诊断、证据、检查、治疗计划和患者沟通。",
+        "Weakness Analysis": "根据练习记录分析薄弱点，并生成 3 天复习计划。",
+        "Realtime Oral Exam": "和 AI 牙科教授实时口试，练习英文回答、追问和考官反馈。",
+    }
 
-        st.markdown("### 学习工作台")
-        st.write("上传 PDF 或粘贴英文课程内容，生成中文讲解、术语表、自测题、Anki 卡片和 PDF 复习包。")
-
-        st.markdown("### 当前功能")
-        st.markdown("- 中文讲解\n- 术语匹配\n- Quiz 自测\n- Anki CSV / PDF 导出")
-    elif mode == "AI Written Exam":
-        st.markdown("### 笔试训练")
-        st.write("根据英文课程内容生成笔试题，输入英文回答后获得结构化评分、中文反馈和追问题。")
-
-        st.markdown("### Text Practice")
-        st.markdown("- 纯文本答题\n- 不录音\n- 不转录\n- 适合先练英文组织和考点覆盖")
-    elif mode == "Clinical Case":
-        st.markdown("### 临床病例训练")
-        st.write("根据英文课程内容生成病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。")
-
-        st.markdown("### Phase 2")
-        st.markdown("- 纯文本模式\n- 不接入语音\n- 适合新手练临床思维\n- 保存最近病例训练记录")
-    elif mode == "Weakness Analysis":
-        st.markdown("### 弱点分析")
-        st.write("综合口试和临床病例记录，分析强项、弱点和下一步学习计划。")
-
-        st.markdown("### Phase 3")
-        st.markdown("- 读取当前会话记录\n- 生成弱点总结\n- 给出 3 天复习计划\n- 推荐下一步练习方向")
-
-    else:
-        st.markdown("### 实时口试")
-        st.write("使用 ElevenLabs Conversational AI Widget，和 AI dental professor 进行实时英文口试。")
-
-        st.markdown("### Voice")
-        st.markdown("- 不使用旧的录音转写流程\n- 不需要 ElevenLabs API Key\n- 需要配置 ELEVENLABS_AGENT_ID\n- 适合真实口试节奏练习")
+    st.markdown("### 当前模式")
+    st.write(mode_descriptions.get(mode, "DentPilot AI 学习训练模式。"))
 
     st.markdown("---")
     if os.getenv("DEEPSEEK_API_KEY"):

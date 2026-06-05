@@ -65,10 +65,7 @@ The Realtime Oral Exam page uses the ElevenLabs Conversational AI Widget. It doe
 
 Use the prompt in `ELEVENLABS_AGENT_PROMPT.md` when creating your ElevenLabs Conversational AI Agent.
 
-The app also passes dynamic variables to the widget:
-- `course_context`
-- `subject`
-- `examiner_style`
+The Streamlit page embeds only the ElevenLabs Agent ID. All exam behavior should be configured inside the ElevenLabs Agent system prompt.
 
 ## Safety Boundary
 
