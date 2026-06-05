@@ -1,0 +1,694 @@
+import csv
+import io
+import os
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+from dotenv import load_dotenv
+from pypdf import PdfReader
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
+
+from ai_engine import generate_study_pack
+
+
+load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+
+
+def extract_pdf_text(uploaded_file) -> tuple[str, int]:
+    pdf = PdfReader(uploaded_file)
+    pages = []
+    for page in pdf.pages:
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages.append(page_text.strip())
+    return "\n\n".join(pages), len(pdf.pages)
+
+
+def get_pdf_font_name() -> str:
+    font_candidates = [
+        Path("C:/Windows/Fonts/msyh.ttc"),
+        Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("C:/Windows/Fonts/simsun.ttc"),
+        Path("C:/Windows/Fonts/arialuni.ttf"),
+    ]
+    for font_path in font_candidates:
+        if font_path.exists():
+            font_name = "DentPilotCJK"
+            if font_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+            return font_name
+    font_name = "STSong-Light"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    return font_name
+
+
+def as_paragraph_text(value) -> str:
+    text_value = str(value or "")
+    return (
+        text_value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br/>")
+    )
+
+
+def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
+    buffer = io.BytesIO()
+    font_name = get_pdf_font_name()
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle(
+        "DentPilotBody",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=10,
+        leading=15,
+        spaceAfter=8,
+    )
+    title = ParagraphStyle(
+        "DentPilotTitle",
+        parent=styles["Title"],
+        fontName=font_name,
+        fontSize=22,
+        leading=28,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=10,
+    )
+    section = ParagraphStyle(
+        "DentPilotSection",
+        parent=styles["Heading2"],
+        fontName=font_name,
+        fontSize=14,
+        leading=18,
+        textColor=colors.HexColor("#1e40af"),
+        spaceBefore=14,
+        spaceAfter=8,
+    )
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=0.55 * inch,
+        leftMargin=0.55 * inch,
+        topMargin=0.6 * inch,
+        bottomMargin=0.6 * inch,
+        title="DentPilot AI 复习包",
+    )
+
+    story = [
+        Paragraph("DentPilot AI 复习包", title),
+        Paragraph(f"专业方向：{as_paragraph_text(subject)}", body),
+        Spacer(1, 8),
+        Paragraph("中文讲解", section),
+        Paragraph(as_paragraph_text(pack.get("chinese_explanation", "")), body),
+        Paragraph("术语表", section),
+    ]
+
+    glossary = pack.get("glossary", [])
+    if glossary:
+        glossary_rows = [[
+            Paragraph("英文", body),
+            Paragraph("中文", body),
+            Paragraph("定义", body),
+            Paragraph("分类", body),
+        ]]
+        for term in glossary:
+            glossary_rows.append([
+                Paragraph(as_paragraph_text(term.get("english", "")), body),
+                Paragraph(as_paragraph_text(term.get("chinese", "")), body),
+                Paragraph(as_paragraph_text(term.get("definition", "")), body),
+                Paragraph(as_paragraph_text(term.get("category", "")), body),
+            ])
+        glossary_table = Table(glossary_rows, colWidths=[1.25 * inch, 1.15 * inch, 3.0 * inch, 1.2 * inch])
+        glossary_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(glossary_table)
+    else:
+        story.append(Paragraph("没有匹配到术语。", body))
+
+    story.append(Paragraph("Quiz 自测", section))
+    quiz = pack.get("quiz", [])
+    if quiz:
+        for index, q in enumerate(quiz, start=1):
+            options = q.get("options", [])
+            option_text = "<br/>".join(as_paragraph_text(option) for option in options)
+            quiz_text = (
+                f"<b>Q{index}. {as_paragraph_text(q.get('question', ''))}</b><br/>"
+                f"{option_text}<br/>"
+                f"<b>答案：</b> {as_paragraph_text(q.get('answer', ''))}<br/>"
+                f"<b>解析：</b> {as_paragraph_text(q.get('explanation_zh', ''))}"
+            )
+            story.append(Paragraph(quiz_text, body))
+    else:
+        story.append(Paragraph("没有生成自测题。", body))
+
+    story.extend([
+        Paragraph("考前总结", section),
+        Paragraph(as_paragraph_text(pack.get("exam_summary", "")), body),
+        Paragraph("Anki 卡片", section),
+    ])
+
+    flashcards = pack.get("flashcards", [])
+    if flashcards:
+        flashcard_rows = [[Paragraph("正面", body), Paragraph("背面", body), Paragraph("类型", body)]]
+        for card in flashcards:
+            flashcard_rows.append([
+                Paragraph(as_paragraph_text(card.get("front", "")), body),
+                Paragraph(as_paragraph_text(card.get("back", "")), body),
+                Paragraph(as_paragraph_text(card.get("type", "")), body),
+            ])
+        flashcard_table = Table(flashcard_rows, colWidths=[2.2 * inch, 3.6 * inch, 0.8 * inch])
+        flashcard_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ccfbf1")),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(flashcard_table)
+    else:
+        story.append(Paragraph("没有生成 Anki 卡片。", body))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+st.set_page_config(
+    page_title="DentPilot AI",
+    page_icon="🦷",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+st.markdown(
+    """
+    <style>
+        :root {
+            --brand: #2563eb;
+            --brand-2: #14b8a6;
+            --brand-dark: #1e40af;
+            --ink: #0f172a;
+            --muted: #64748b;
+            --panel: #ffffff;
+            --line: #dbeafe;
+            --soft: #eff6ff;
+            --mint: #f0fdfa;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at 8% 0%, rgba(20, 184, 166, 0.20), transparent 28rem),
+                radial-gradient(circle at 90% 12%, rgba(37, 99, 235, 0.18), transparent 32rem),
+                linear-gradient(180deg, #f8fbff 0%, #eef6ff 44%, #f8fafc 100%);
+            color: var(--ink);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #111827 62%, #0b1220 100%);
+        }
+
+        [data-testid="stSidebar"] * {
+            color: #e5edf7;
+        }
+
+        [data-testid="stSidebar"] .stSelectbox label {
+            color: #cbd5e1;
+        }
+
+        [data-testid="stSidebar"] hr {
+            border-color: rgba(226, 232, 240, 0.18);
+        }
+
+        .main .block-container {
+            padding-top: 1.75rem;
+            max-width: 1200px;
+        }
+
+        h1, h2, h3 {
+            letter-spacing: 0;
+        }
+
+        .hero {
+            position: relative;
+            overflow: hidden;
+            border: 1px solid rgba(37, 99, 235, 0.16);
+            background:
+                linear-gradient(135deg, rgba(255, 255, 255, 0.96) 0%, rgba(240, 247, 255, 0.92) 56%, rgba(240, 253, 250, 0.94) 100%);
+            border-radius: 20px;
+            padding: 2.25rem;
+            box-shadow: 0 24px 70px rgba(15, 23, 42, 0.08);
+            margin-bottom: 1.25rem;
+        }
+
+        .eyebrow {
+            color: var(--brand-dark);
+            font-size: 0.78rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 0.6rem;
+        }
+
+        .hero-title {
+            color: var(--ink);
+            font-size: clamp(2.35rem, 4vw, 4.6rem);
+            font-weight: 850;
+            line-height: 0.98;
+            margin: 0;
+        }
+
+        .hero-subtitle {
+            color: var(--muted);
+            font-size: 1.15rem;
+            line-height: 1.65;
+            max-width: 720px;
+            margin-top: 1rem;
+            margin-bottom: 0;
+        }
+
+        .hero-copy {
+            color: #334155;
+            font-size: 0.98rem;
+            line-height: 1.7;
+            max-width: 760px;
+            margin-top: 0.75rem;
+        }
+
+        .hero-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin-top: 1.4rem;
+        }
+
+        .metric-pill {
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            border-radius: 12px;
+            padding: 0.8rem 0.9rem;
+        }
+
+        .metric-value {
+            color: var(--brand-dark);
+            font-size: 1.35rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 0.8rem;
+            margin-top: 0.25rem;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.9rem;
+            margin: 1rem 0 1.1rem;
+        }
+
+        .feature-card {
+            background: var(--panel);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: 12px;
+            padding: 1rem;
+            min-height: 132px;
+            box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+        }
+
+        .feature-icon {
+            color: var(--brand);
+            font-size: 1.35rem;
+            line-height: 1;
+        }
+
+        .feature-title {
+            color: var(--ink);
+            font-weight: 800;
+            margin-top: 0.55rem;
+            margin-bottom: 0.3rem;
+        }
+
+        .feature-copy {
+            color: var(--muted);
+            font-size: 0.9rem;
+            line-height: 1.45;
+        }
+
+        .input-panel {
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            border-radius: 16px;
+            padding: 1.25rem;
+            box-shadow: 0 18px 50px rgba(15, 23, 42, 0.07);
+        }
+
+        .section-label {
+            color: var(--brand-dark);
+            font-weight: 800;
+            font-size: 0.86rem;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            margin-bottom: 0.35rem;
+        }
+
+        .section-copy {
+            color: var(--muted);
+            margin-bottom: 1rem;
+        }
+
+        div[data-testid="stButton"] > button {
+            border-radius: 10px;
+            border: 0;
+            min-height: 3rem;
+            font-weight: 800;
+            box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
+        }
+
+        div[data-testid="stDownloadButton"] > button {
+            border-radius: 10px;
+            font-weight: 700;
+        }
+
+        .result-wrap {
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 16px;
+            padding: 1rem;
+            margin-top: 1.4rem;
+        }
+
+        .example-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.6fr) minmax(220px, 0.8fr);
+            gap: 1rem;
+            align-items: stretch;
+            margin-bottom: 0.8rem;
+        }
+
+        .example-card,
+        .workflow-card {
+            background: #ffffff;
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            border-radius: 12px;
+            padding: 1rem;
+        }
+
+        .example-title {
+            color: var(--ink);
+            font-weight: 800;
+            margin-bottom: 0.45rem;
+        }
+
+        .example-copy {
+            color: var(--muted);
+            font-size: 0.92rem;
+            line-height: 1.55;
+        }
+
+        .footer {
+            color: #64748b;
+            border-top: 1px solid rgba(148, 163, 184, 0.25);
+            margin-top: 2rem;
+            padding: 1.2rem 0 0.25rem;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 900px) {
+            .hero-metrics,
+            .feature-grid,
+            .example-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero {
+                padding: 1.35rem;
+            }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+sample = (
+    "Dental caries is a biofilm-mediated, sugar-driven, multifactorial disease that results "
+    "in the demineralization of dental hard tissues. The balance between demineralization "
+    "and remineralization is influenced by oral hygiene, diet, fluoride exposure, saliva, "
+    "and bacterial activity. Pulpitis is inflammation of the dental pulp and may be reversible "
+    "or irreversible depending on the duration and severity of symptoms."
+)
+
+
+with st.sidebar:
+    st.markdown("## 🦷 DentPilot AI")
+    st.caption("面向中国留学生的英授牙科学习助手")
+    st.markdown("---")
+
+    subject = st.selectbox(
+        "专业方向",
+        ["Dentistry", "General Medicine", "Anatomy", "Pathology", "Pharmacology", "Histology"],
+        format_func={
+            "Dentistry": "牙科学 / 口腔医学",
+            "General Medicine": "基础医学",
+            "Anatomy": "解剖学",
+            "Pathology": "病理学",
+            "Pharmacology": "药理学",
+            "Histology": "组织学",
+        }.get,
+    )
+
+    st.markdown("### 学习工作台")
+    st.write("上传 PDF 或粘贴英文课程内容，生成中文讲解、术语表、自测题、Anki 卡片和 PDF 复习包。")
+
+    st.markdown("### 当前功能")
+    st.markdown("- 中文讲解\n- 术语匹配\n- Quiz 自测\n- Anki CSV / PDF 导出")
+
+    st.markdown("---")
+    if os.getenv("DEEPSEEK_API_KEY"):
+        st.caption("AI 服务已连接")
+    else:
+        st.caption("AI 服务未配置 · 将使用本地备用模式")
+
+
+st.markdown(
+    """
+    <section class="hero">
+        <div class="eyebrow">英授牙科课程学习助手</div>
+        <h1 class="hero-title">DentPilot AI</h1>
+        <p class="hero-subtitle">AI Study Assistant for English-Taught Dental Students</p>
+        <p class="hero-copy">为中国留学生设计：把英文 lecture、PDF、PPT 和教材段落整理成可复习的中文讲解、牙科术语、自测题、Anki 卡片和 PDF 复习包。</p>
+        <div class="hero-metrics">
+            <div class="metric-pill">
+                <div class="metric-value">中文</div>
+                <div class="metric-label">先理解，再背诵</div>
+            </div>
+            <div class="metric-pill">
+                <div class="metric-value">自测</div>
+                <div class="metric-label">检查概念是否掌握</div>
+            </div>
+            <div class="metric-pill">
+                <div class="metric-value">Anki</div>
+                <div class="metric-label">导出 CSV 复习卡片</div>
+            </div>
+        </div>
+    </section>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+st.markdown(
+    """
+    <div class="feature-grid">
+        <div class="feature-card">
+            <div class="feature-icon">✦</div>
+            <div class="feature-title">中文讲解</div>
+            <div class="feature-copy">把密集的英文牙科内容转成适合中国学生理解的中文复习笔记。</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">⌁</div>
+            <div class="feature-title">牙科术语表</div>
+            <div class="feature-copy">匹配课程关键词，建立中英文术语和定义之间的联系。</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">?</div>
+            <div class="feature-title">Quiz 自测</div>
+            <div class="feature-copy">检查定义、机制链、临床意义和高频考点是否真正掌握。</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">↓</div>
+            <div class="feature-title">复习资料导出</div>
+            <div class="feature-copy">导出 Anki CSV 和 PDF 复习包，方便考前整理和间隔复习。</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+st.markdown('<div class="input-panel">', unsafe_allow_html=True)
+st.markdown('<div class="section-label">生成复习包</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-copy">上传 PDF，或粘贴英文牙科 lecture、教材段落、PPT 文本。</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    f"""
+    <div class="example-grid">
+        <div class="example-card">
+            <div class="example-title">示例输入</div>
+            <div class="example-copy">{sample}</div>
+        </div>
+        <div class="workflow-card">
+            <div class="example-title">生成内容</div>
+            <div class="example-copy">1. 中文讲解<br>2. 术语表<br>3. Quiz 自测<br>4. Anki CSV<br>5. PDF 复习包</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+uploaded_pdf = st.file_uploader(
+    "上传 PDF 课程资料",
+    type=["pdf"],
+    help="支持英文 lecture PDF、教材节选或课件讲义。可选中文本 PDF 的提取效果最好。",
+)
+
+pdf_text = ""
+if uploaded_pdf is not None:
+    try:
+        with st.spinner("Extracting text from PDF..."):
+            pdf_text, page_count = extract_pdf_text(uploaded_pdf)
+        if pdf_text.strip():
+            st.success(f"已从 PDF 的 {page_count} 页中提取文本。生成前你仍然可以编辑。")
+        else:
+            st.warning("没有从这个 PDF 中提取到可选中文本。如果这是扫描版 PDF，需要先做 OCR。")
+    except Exception as exc:
+        st.error(f"无法提取这个 PDF 的文本：{exc}")
+
+text = st.text_area(
+    "英文牙科 / 医学课程内容",
+    value=pdf_text or sample,
+    height=220,
+    placeholder="在这里粘贴英文牙科 lecture、PPT 或教材内容...",
+)
+
+col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
+with col_a:
+    generate = st.button("生成复习包", type="primary", use_container_width=True)
+with col_b:
+    st.caption("建议先用一小段 lecture/PPT 文本测试，结果会更清晰。")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+if generate:
+    if not text.strip():
+        st.error("请先粘贴英文课程内容或上传 PDF。")
+        st.stop()
+
+    pack = generate_study_pack(text, subject)
+
+    st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
+    st.markdown("### 复习包")
+    status_message = pack.get("status_message")
+    if pack.get("mode") == "fallback":
+        st.warning(status_message or "当前使用本地备用模式。")
+    elif status_message:
+        st.success(status_message)
+
+    pdf_bytes = build_study_pack_pdf(pack, subject)
+    st.download_button(
+        "导出 PDF 复习包",
+        pdf_bytes,
+        "dentpilot_study_pack.pdf",
+        "application/pdf",
+        use_container_width=True,
+    )
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["中文讲解", "术语表", "Quiz 自测", "Anki 卡片", "考前总结"]
+    )
+
+    with tab1:
+        st.subheader("中文讲解")
+        st.write(pack["chinese_explanation"])
+        st.subheader("核心概念")
+        for item in pack["key_concepts"]:
+            st.markdown(f"- {item}")
+
+    with tab2:
+        st.subheader("中英医学术语表")
+        if pack["glossary"]:
+            df_terms = pd.DataFrame(pack["glossary"])
+            st.dataframe(df_terms, use_container_width=True)
+            csv_terms = df_terms.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("下载术语表 CSV", csv_terms, "glossary.csv", "text/csv")
+        else:
+            st.info("没有匹配到内置术语。你可以在 glossary.py 里继续添加。")
+
+    with tab3:
+        st.subheader("自测题")
+        for i, q in enumerate(pack["quiz"], start=1):
+            st.markdown(f"**Q{i}. {q['question']}**")
+            for option in q["options"]:
+                st.write(f"- {option}")
+            with st.expander("查看答案与中文解析"):
+                st.write(f"答案：{q['answer']}")
+                st.write(q["explanation_zh"])
+
+    with tab4:
+        st.subheader("Anki 卡片")
+        df_cards = pd.DataFrame(pack["flashcards"])
+        st.dataframe(df_cards, use_container_width=True)
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Front", "Back", "Tags"])
+        for card in pack["flashcards"]:
+            writer.writerow([card["front"], card["back"], f"medstudy::{subject}::{card['type']}"])
+        st.download_button(
+            "下载 Anki CSV",
+            output.getvalue().encode("utf-8-sig"),
+            "medstudy_anki_cards.csv",
+            "text/csv",
+        )
+
+    with tab5:
+        st.subheader("考前总结")
+        st.write(pack["exam_summary"])
+        st.info("真实商业版可以在这里加入：PDF 导出、课程文件夹、错题本、会员限制。")
+    st.markdown("</div>", unsafe_allow_html=True)
+else:
+    st.info("点击“生成复习包”开始。")
+
+
+st.markdown(
+    """
+    <div class="footer">
+        DentPilot AI 帮助英授牙科留学生把英文课程资料整理成中文讲解、术语复习、Quiz 自测、Anki 卡片和 PDF 复习包。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
