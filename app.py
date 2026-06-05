@@ -29,6 +29,7 @@ from oral_exam import (
     generate_oral_question,
     grade_oral_answer,
 )
+from voice_tools import browser_tts_button, generate_examiner_audio, transcribe_student_audio
 from weakness_analysis import (
     WeaknessAnalysisConfigError,
     WeaknessAnalysisJSONError,
@@ -528,8 +529,8 @@ def render_oral_exam_mode(default_text: str):
         <section class="hero">
             <div class="eyebrow">AI 口试模拟</div>
             <h1 class="hero-title">DentPilot AI Oral Exam</h1>
-            <p class="hero-subtitle">文本版英文口试训练：生成问题、输入英文回答、获得结构化评分和中文反馈。</p>
-            <p class="hero-copy">Phase 1 只做文字，不接入语音、ElevenLabs 或语音识别。系统会根据课程内容生成口试题，并用医学/牙科口试评分标准批改。</p>
+            <p class="hero-subtitle">英文口试训练：生成问题、可选语音朗读、录音转写、结构化评分和中文反馈。</p>
+            <p class="hero-copy">Voice Phase 1 是轮次式语音增强，不是实时语音聊天。DeepSeek 仍负责出题和评分，语音只用于朗读问题和转写学生回答。</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -571,6 +572,10 @@ def render_oral_exam_mode(default_text: str):
                         oral_difficulty,
                     )
                     st.session_state["oral_exam_result"] = None
+                    st.session_state["oral_examiner_audio"] = None
+                    st.session_state["oral_student_transcript"] = ""
+                    st.session_state["oral_audio_signature"] = ""
+                    st.session_state["oral_voice_used"] = False
                     st.session_state["last_course_text"] = oral_course_text
                 st.success("口试题已生成。")
             except OralExamConfigError as exc:
@@ -584,7 +589,27 @@ def render_oral_exam_mode(default_text: str):
     question_data = st.session_state.get("oral_question_data")
     if question_data:
         st.markdown("### Oral Exam Question")
-        st.info(question_data.get("question", ""))
+        question_text = question_data.get("question", "")
+        st.info(question_text)
+        st.caption("Voice mode is optional. You can type your answer if transcription fails.")
+
+        if st.button("🔊 Play Premium Examiner Voice", use_container_width=True):
+            try:
+                with st.spinner("Generating examiner voice..."):
+                    examiner_audio = generate_examiner_audio(question_text)
+                if examiner_audio:
+                    st.session_state["oral_examiner_audio"] = examiner_audio
+                    st.session_state["oral_voice_used"] = True
+                    st.success("Premium examiner voice is ready.")
+                else:
+                    st.info("Premium voice is not configured.")
+            except Exception as exc:
+                st.warning(f"Premium voice failed, falling back to text-only mode: {exc}")
+
+        if st.session_state.get("oral_examiner_audio"):
+            st.audio(st.session_state["oral_examiner_audio"], format="audio/mp3")
+
+        browser_tts_button(question_text)
 
         with st.expander("查看 expected points / must-mention terms / model answer"):
             st.markdown("**Expected Points**")
@@ -596,10 +621,35 @@ def render_oral_exam_mode(default_text: str):
             st.markdown("**Model Answer**")
             st.write(question_data.get("model_answer", ""))
 
+        recorded_audio = None
+        if hasattr(st, "audio_input"):
+            recorded_audio = st.audio_input("Record your spoken answer")
+        else:
+            st.info("Audio recording is not available in this Streamlit version. You can type your answer below.")
+
+        if recorded_audio is not None:
+            audio_bytes = recorded_audio.getvalue()
+            audio_signature = f"{len(audio_bytes)}:{audio_bytes[:16].hex()}"
+            if st.session_state.get("oral_audio_signature") != audio_signature:
+                st.session_state["oral_audio_signature"] = audio_signature
+                st.session_state["oral_voice_used"] = True
+                try:
+                    with st.spinner("Transcribing your spoken answer..."):
+                        transcript = transcribe_student_audio(recorded_audio)
+                    if transcript:
+                        st.session_state["oral_student_transcript"] = transcript
+                        st.success("Transcript generated. You can edit it before grading.")
+                    else:
+                        st.info("Premium transcription is not configured. Please type your answer below.")
+                except Exception as exc:
+                    st.warning(f"Transcription failed. Please type or edit your answer manually: {exc}")
+
+        st.session_state.setdefault("oral_student_transcript", "")
         student_answer = st.text_area(
-            "Your English Answer",
+            "Transcript / Your English Answer",
             height=180,
-            placeholder="Type your oral exam answer in English...",
+            placeholder="Type or edit your oral exam answer in English...",
+            key="oral_student_transcript",
         )
 
         if st.button("Submit & Grade", type="primary", use_container_width=True):
@@ -615,8 +665,12 @@ def render_oral_exam_mode(default_text: str):
                         "difficulty": question_data.get("difficulty", oral_difficulty),
                         "topic": question_data.get("topic", ""),
                         "question": question_data.get("question", ""),
+                        "expected_points": question_data.get("expected_points", []),
                         "answer": student_answer,
+                        "student_transcript": student_answer,
                         "result": result,
+                        "grading_result": result,
+                        "voice_used": bool(st.session_state.get("oral_voice_used")),
                     }
                     st.session_state["oral_exam_history"].insert(0, attempt)
                     st.session_state["oral_exam_history"] = st.session_state["oral_exam_history"][:10]
@@ -1001,7 +1055,7 @@ with st.sidebar:
         st.write("根据英文课程内容生成口试题，输入英文回答后获得结构化评分、中文反馈和追问题。")
 
         st.markdown("### Phase 1")
-        st.markdown("- 纯文本模式\n- 不接入语音\n- 不接入 ElevenLabs\n- 不接入语音识别")
+        st.markdown("- 文字回答仍可用\n- 语音模式可选\n- Premium voice 需要 ElevenLabs\n- 浏览器朗读可免费使用")
     elif mode == "Clinical Case":
         st.markdown("### 临床病例训练")
         st.write("根据英文课程内容生成病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。")

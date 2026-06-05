@@ -4,3 +4,5 @@ python-dotenv>=1.0.1
 openai>=1.59.0
 pypdf>=5.0.0
 reportlab>=4.2.0
+elevenlabs
+requests
