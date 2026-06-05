@@ -29,6 +29,11 @@ from oral_exam import (
     generate_oral_question,
     grade_oral_answer,
 )
+from weakness_analysis import (
+    WeaknessAnalysisConfigError,
+    WeaknessAnalysisJSONError,
+    analyze_weaknesses,
+)
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
@@ -860,6 +865,102 @@ def render_clinical_case_mode(default_text: str):
     )
 
 
+def render_weakness_analysis_mode():
+    oral_history = st.session_state.get("oral_exam_history", [])
+    clinical_history = st.session_state.get("clinical_case_history", [])
+
+    st.markdown(
+        """
+        <section class="hero">
+            <div class="eyebrow">AI 弱点分析</div>
+            <h1 class="hero-title">Weakness Analysis</h1>
+            <p class="hero-subtitle">根据口试和临床病例训练记录，找出强项、弱点、可能原因，并生成 3 天复习计划。</p>
+            <p class="hero-copy">Phase 3 会读取当前会话中的练习记录。请先完成至少一次口试或病例训练，再进行分析。</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="input-panel">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">练习记录</div>', unsafe_allow_html=True)
+
+    metric_col_1, metric_col_2 = st.columns(2)
+    metric_col_1.metric("Oral Exam Attempts", len(oral_history))
+    metric_col_2.metric("Clinical Case Attempts", len(clinical_history))
+
+    if not oral_history and not clinical_history:
+        st.info("Please complete at least one oral exam or clinical case first.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    if st.button("Analyze My Weaknesses", type="primary", use_container_width=True):
+        try:
+            with st.spinner("正在分析你的练习弱点..."):
+                st.session_state["weakness_analysis_result"] = analyze_weaknesses(
+                    oral_history,
+                    clinical_history,
+                )
+            st.success("弱点分析已生成。")
+        except WeaknessAnalysisConfigError as exc:
+            st.error(str(exc))
+        except WeaknessAnalysisJSONError as exc:
+            st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+            st.code(exc.raw_output)
+        except Exception as exc:
+            st.error(f"弱点分析失败：{exc}")
+
+    result = st.session_state.get("weakness_analysis_result")
+    if result:
+        st.markdown("### Overall Summary")
+        st.write(result.get("overall_summary", ""))
+
+        col_1, col_2 = st.columns(2)
+        with col_1:
+            st.subheader("Strong Areas")
+            for item in result.get("strong_areas", []):
+                st.markdown(f"- {item}")
+        with col_2:
+            st.subheader("Weak Areas")
+            for item in result.get("weak_areas", []):
+                st.markdown(f"- {item}")
+
+        st.subheader("Likely Reasons")
+        for item in result.get("likely_reasons", []):
+            st.markdown(f"- {item}")
+
+        st.subheader("Topic Breakdown")
+        topic_breakdown = result.get("topic_breakdown", [])
+        if topic_breakdown:
+            st.dataframe(pd.DataFrame(topic_breakdown), use_container_width=True, hide_index=True)
+        else:
+            st.info("暂无 topic breakdown。")
+
+        st.subheader("Three-Day Study Plan")
+        for day_plan in result.get("three_day_plan", []):
+            with st.expander(f"Day {day_plan.get('day')}: {day_plan.get('focus', '')}", expanded=True):
+                for task in day_plan.get("tasks", []):
+                    st.markdown(f"- {task}")
+
+        with st.expander("Next Practice Suggestions"):
+            st.markdown("**Next Oral Questions**")
+            for item in result.get("next_oral_questions", []):
+                st.markdown(f"- {item}")
+            st.markdown("**Next Case Topics**")
+            for item in result.get("next_case_topics", []):
+                st.markdown(f"- {item}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div class="footer">
+            Weakness Analysis 会根据当前会话练习记录生成学习建议；刷新或重新开启会话后，临时记录可能会清空。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 with st.sidebar:
     st.markdown("## 🦷 DentPilot AI")
     st.caption("面向中国留学生的英授牙科学习助手")
@@ -867,11 +968,12 @@ with st.sidebar:
 
     mode = st.radio(
         "学习模式",
-        ["Study Pack", "AI Oral Exam", "Clinical Case"],
+        ["Study Pack", "AI Oral Exam", "Clinical Case", "Weakness Analysis"],
         format_func={
             "Study Pack": "Study Pack / 复习包",
             "AI Oral Exam": "AI Oral Exam / 口试模拟",
             "Clinical Case": "Clinical Case / 临床病例",
+            "Weakness Analysis": "Weakness Analysis / 弱点分析",
         }.get,
     )
 
@@ -900,12 +1002,18 @@ with st.sidebar:
 
         st.markdown("### Phase 1")
         st.markdown("- 纯文本模式\n- 不接入语音\n- 不接入 ElevenLabs\n- 不接入语音识别")
-    else:
+    elif mode == "Clinical Case":
         st.markdown("### 临床病例训练")
         st.write("根据英文课程内容生成病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。")
 
         st.markdown("### Phase 2")
         st.markdown("- 纯文本模式\n- 不接入语音\n- 适合新手练临床思维\n- 保存最近病例训练记录")
+    else:
+        st.markdown("### 弱点分析")
+        st.write("综合口试和临床病例记录，分析强项、弱点和下一步学习计划。")
+
+        st.markdown("### Phase 3")
+        st.markdown("- 读取当前会话记录\n- 生成弱点总结\n- 给出 3 天复习计划\n- 推荐下一步练习方向")
 
     st.markdown("---")
     if os.getenv("DEEPSEEK_API_KEY"):
@@ -920,6 +1028,10 @@ if mode == "AI Oral Exam":
 
 if mode == "Clinical Case":
     render_clinical_case_mode(sample)
+    st.stop()
+
+if mode == "Weakness Analysis":
+    render_weakness_analysis_mode()
     st.stop()
 
 
