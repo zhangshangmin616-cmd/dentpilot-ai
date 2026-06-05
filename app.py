@@ -17,6 +17,12 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 
 from ai_engine import generate_study_pack
+from oral_exam import (
+    OralExamConfigError,
+    OralExamJSONError,
+    generate_oral_question,
+    grade_oral_answer,
+)
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
@@ -459,35 +465,236 @@ sample = (
 )
 
 
+def render_oral_grade_result(result: dict):
+    st.markdown("### 评分结果")
+    score_col, level_col = st.columns([1, 1])
+    score_col.metric("总分", f"{result.get('score', 0)}/100")
+    level_col.metric("等级", result.get("level", ""))
+
+    rubric_rows = [
+        {"评分项": "Content Accuracy", "得分": result.get("content_accuracy", 0), "满分": 30},
+        {"评分项": "Completeness", "得分": result.get("completeness", 0), "满分": 20},
+        {"评分项": "Clinical Reasoning", "得分": result.get("clinical_reasoning", 0), "满分": 20},
+        {"评分项": "English Expression", "得分": result.get("english_expression", 0), "满分": 10},
+        {"评分项": "Examiner Interaction", "得分": result.get("examiner_interaction", 0), "满分": 10},
+        {"评分项": "Pronunciation & Fluency", "得分": result.get("pronunciation_fluency", 0), "满分": 10},
+    ]
+    st.dataframe(pd.DataFrame(rubric_rows), use_container_width=True, hide_index=True)
+
+    col_1, col_2 = st.columns(2)
+    with col_1:
+        st.subheader("优点")
+        strengths = result.get("strengths") or []
+        if strengths:
+            for item in strengths:
+                st.markdown(f"- {item}")
+        else:
+            st.write("暂无。")
+    with col_2:
+        st.subheader("缺失要点")
+        missing_points = result.get("missing_points") or []
+        if missing_points:
+            for item in missing_points:
+                st.markdown(f"- {item}")
+        else:
+            st.write("暂无。")
+
+    st.subheader("Corrected Answer")
+    st.write(result.get("corrected_answer", ""))
+
+    st.subheader("中文反馈")
+    st.write(result.get("chinese_feedback", ""))
+
+    st.subheader("Follow-up Question")
+    st.info(result.get("follow_up_question", ""))
+
+
+def render_oral_exam_mode(default_text: str):
+    st.session_state.setdefault("oral_exam_history", [])
+
+    st.markdown(
+        """
+        <section class="hero">
+            <div class="eyebrow">AI 口试模拟</div>
+            <h1 class="hero-title">DentPilot AI Oral Exam</h1>
+            <p class="hero-subtitle">文本版英文口试训练：生成问题、输入英文回答、获得结构化评分和中文反馈。</p>
+            <p class="hero-copy">Phase 1 只做文字，不接入语音、ElevenLabs 或语音识别。系统会根据课程内容生成口试题，并用医学/牙科口试评分标准批改。</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="input-panel">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">口试材料</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">粘贴英文课程内容，或复用刚才 Study Pack 中输入过的文本。</div>',
+        unsafe_allow_html=True,
+    )
+
+    oral_default_text = st.session_state.get("last_course_text", default_text)
+    oral_course_text = st.text_area(
+        "Course Text",
+        value=oral_default_text,
+        height=220,
+        placeholder="Paste your English dental or medical course text here...",
+    )
+
+    control_col_1, control_col_2 = st.columns(2)
+    with control_col_1:
+        oral_subject = st.selectbox(
+            "Subject",
+            ["Dentistry", "Anatomy", "Pathology", "Pharmacology", "Endodontics", "Periodontology", "Oral Surgery"],
+        )
+    with control_col_2:
+        oral_difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"], index=1)
+
+    if st.button("Generate Oral Question", type="primary", use_container_width=True):
+        if not oral_course_text.strip():
+            st.error("请先粘贴英文课程内容。")
+        else:
+            try:
+                with st.spinner("正在生成口试题..."):
+                    st.session_state["oral_question_data"] = generate_oral_question(
+                        oral_course_text,
+                        oral_subject,
+                        oral_difficulty,
+                    )
+                    st.session_state["oral_exam_result"] = None
+                    st.session_state["last_course_text"] = oral_course_text
+                st.success("口试题已生成。")
+            except OralExamConfigError as exc:
+                st.error(str(exc))
+            except OralExamJSONError as exc:
+                st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+                st.code(exc.raw_output)
+            except Exception as exc:
+                st.error(f"生成口试题失败：{exc}")
+
+    question_data = st.session_state.get("oral_question_data")
+    if question_data:
+        st.markdown("### Oral Exam Question")
+        st.info(question_data.get("question", ""))
+
+        with st.expander("查看 expected points / must-mention terms / model answer"):
+            st.markdown("**Expected Points**")
+            for item in question_data.get("expected_points", []):
+                st.markdown(f"- {item}")
+            st.markdown("**Must Mention Terms**")
+            for item in question_data.get("must_mention_terms", []):
+                st.markdown(f"- {item}")
+            st.markdown("**Model Answer**")
+            st.write(question_data.get("model_answer", ""))
+
+        student_answer = st.text_area(
+            "Your English Answer",
+            height=180,
+            placeholder="Type your oral exam answer in English...",
+        )
+
+        if st.button("Submit & Grade", type="primary", use_container_width=True):
+            if not student_answer.strip():
+                st.error("请先输入你的英文回答。")
+            else:
+                try:
+                    with st.spinner("正在批改你的口试回答..."):
+                        result = grade_oral_answer(question_data, student_answer, oral_subject)
+                    st.session_state["oral_exam_result"] = result
+                    attempt = {
+                        "subject": oral_subject,
+                        "difficulty": question_data.get("difficulty", oral_difficulty),
+                        "topic": question_data.get("topic", ""),
+                        "question": question_data.get("question", ""),
+                        "answer": student_answer,
+                        "result": result,
+                    }
+                    st.session_state["oral_exam_history"].insert(0, attempt)
+                    st.session_state["oral_exam_history"] = st.session_state["oral_exam_history"][:10]
+                except OralExamConfigError as exc:
+                    st.error(str(exc))
+                except OralExamJSONError as exc:
+                    st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+                    st.code(exc.raw_output)
+                except Exception as exc:
+                    st.error(f"批改失败：{exc}")
+
+    if st.session_state.get("oral_exam_result"):
+        render_oral_grade_result(st.session_state["oral_exam_result"])
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("### 最近口试记录")
+    history = st.session_state.get("oral_exam_history", [])
+    if not history:
+        st.info("还没有口试记录。生成问题并提交回答后，会在这里保存最近记录。")
+    else:
+        for index, attempt in enumerate(history[:5], start=1):
+            result = attempt.get("result", {})
+            label = f"{index}. {attempt.get('topic') or attempt.get('subject')} - {result.get('score', 0)}/100 ({result.get('level', '')})"
+            with st.expander(label):
+                st.markdown(f"**Question:** {attempt.get('question', '')}")
+                st.markdown(f"**Your Answer:** {attempt.get('answer', '')}")
+                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback', '')}")
+
+    st.markdown(
+        """
+        <div class="footer">
+            DentPilot AI Oral Exam 目前为文本训练模式，用于帮助学生准备英文医学/牙科口试。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 with st.sidebar:
     st.markdown("## 🦷 DentPilot AI")
     st.caption("面向中国留学生的英授牙科学习助手")
     st.markdown("---")
 
-    subject = st.selectbox(
-        "专业方向",
-        ["Dentistry", "General Medicine", "Anatomy", "Pathology", "Pharmacology", "Histology"],
+    mode = st.radio(
+        "学习模式",
+        ["Study Pack", "AI Oral Exam"],
         format_func={
-            "Dentistry": "牙科学 / 口腔医学",
-            "General Medicine": "基础医学",
-            "Anatomy": "解剖学",
-            "Pathology": "病理学",
-            "Pharmacology": "药理学",
-            "Histology": "组织学",
+            "Study Pack": "Study Pack / 复习包",
+            "AI Oral Exam": "AI Oral Exam / 口试模拟",
         }.get,
     )
 
-    st.markdown("### 学习工作台")
-    st.write("上传 PDF 或粘贴英文课程内容，生成中文讲解、术语表、自测题、Anki 卡片和 PDF 复习包。")
+    if mode == "Study Pack":
+        subject = st.selectbox(
+            "专业方向",
+            ["Dentistry", "General Medicine", "Anatomy", "Pathology", "Pharmacology", "Histology"],
+            format_func={
+                "Dentistry": "牙科学 / 口腔医学",
+                "General Medicine": "基础医学",
+                "Anatomy": "解剖学",
+                "Pathology": "病理学",
+                "Pharmacology": "药理学",
+                "Histology": "组织学",
+            }.get,
+        )
 
-    st.markdown("### 当前功能")
-    st.markdown("- 中文讲解\n- 术语匹配\n- Quiz 自测\n- Anki CSV / PDF 导出")
+        st.markdown("### 学习工作台")
+        st.write("上传 PDF 或粘贴英文课程内容，生成中文讲解、术语表、自测题、Anki 卡片和 PDF 复习包。")
+
+        st.markdown("### 当前功能")
+        st.markdown("- 中文讲解\n- 术语匹配\n- Quiz 自测\n- Anki CSV / PDF 导出")
+    else:
+        st.markdown("### 口试训练")
+        st.write("根据英文课程内容生成口试题，输入英文回答后获得结构化评分、中文反馈和追问题。")
+
+        st.markdown("### Phase 1")
+        st.markdown("- 纯文本模式\n- 不接入语音\n- 不接入 ElevenLabs\n- 不接入语音识别")
 
     st.markdown("---")
     if os.getenv("DEEPSEEK_API_KEY"):
         st.caption("AI 服务已连接")
     else:
         st.caption("AI 服务未配置 · 将使用本地备用模式")
+
+
+if mode == "AI Oral Exam":
+    render_oral_exam_mode(sample)
+    st.stop()
 
 
 st.markdown(
@@ -593,6 +800,7 @@ text = st.text_area(
     height=220,
     placeholder="在这里粘贴英文牙科 lecture、PPT 或教材内容...",
 )
+st.session_state["last_course_text"] = text
 
 col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
 with col_a:
