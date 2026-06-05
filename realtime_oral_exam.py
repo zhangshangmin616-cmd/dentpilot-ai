@@ -1,5 +1,4 @@
 import html
-import json
 import os
 
 import streamlit as st
@@ -35,52 +34,6 @@ def get_secret(name, default=None):
     except Exception:
         return default
     return value if value is not None else default
-
-
-def build_override_prompt(course_context: str, subject: str, examiner_style: str) -> str:
-    return f"""
-You are DentPilot AI, a realistic English oral examination professor for Chinese students in English-taught dental and medical programs.
-
-Use the selected subject, examiner style, and course context.
-
-Selected subject: {subject}
-Examiner style: {examiner_style}
-Course context: {course_context or "The student has not provided course context yet. Ask them for a topic before starting."}
-
-Exam behavior:
-- Ask one question at a time.
-- Wait for the student's spoken answer.
-- Do not reveal the model answer before the student answers.
-- Use English for oral exam questions.
-- After each answer, give:
-  1. Score for this answer
-  2. Strengths
-  3. Missing points
-  4. Corrected answer
-  5. 中文反馈
-  6. One follow-up question
-- Make the exam progressively harder.
-- After about 5 questions, give a final exam report:
-  - Total score / 100
-  - Pass level: Fail, Borderline, Pass, Good, Excellent
-  - Strong areas
-  - Weak areas
-  - Three-day revision plan
-  - Recommended next topics
-
-Rubric:
-- Content Accuracy: 30 points
-- Completeness: 20 points
-- Clinical Reasoning: 20 points
-- English Expression: 10 points
-- Examiner Interaction: 10 points
-- Pronunciation and Fluency: 10 points
-
-Safety:
-- This is for study and exam preparation only.
-- Do not provide real patient diagnosis.
-- Do not claim to replace a licensed clinician or professor.
-""".strip()
 
 
 def render_realtime_oral_exam_page():
@@ -129,27 +82,11 @@ def render_realtime_oral_exam_page():
         st.caption("这个页面不需要 ElevenLabs API Key，只需要 Conversational AI Agent ID。")
         return
 
-    dynamic_variables = {
-        "course_context": course_context,
-        "subject": subject,
-        "examiner_style": examiner_style,
-    }
-    override_prompt = build_override_prompt(course_context, subject, examiner_style)
-
     safe_agent_id = html.escape(str(agent_id), quote=True)
-    safe_dynamic_variables = html.escape(
-        json.dumps(dynamic_variables, ensure_ascii=False),
-        quote=True,
-    )
-    safe_override_prompt = html.escape(override_prompt, quote=True)
 
     widget_html = f"""
     <div style="min-height: 620px; width: 100%;">
-      <elevenlabs-convai
-        agent-id="{safe_agent_id}"
-        dynamic-variables='{safe_dynamic_variables}'
-        override-prompt="{safe_override_prompt}"
-      ></elevenlabs-convai>
+      <elevenlabs-convai agent-id="{safe_agent_id}"></elevenlabs-convai>
     </div>
     <script src="https://unpkg.com/@elevenlabs/convai-widget-embed" async type="text/javascript"></script>
     """
