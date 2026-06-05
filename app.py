@@ -17,6 +17,12 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 
 from ai_engine import generate_study_pack
+from clinical_case import (
+    ClinicalCaseConfigError,
+    ClinicalCaseJSONError,
+    generate_clinical_case,
+    grade_clinical_case,
+)
 from oral_exam import (
     OralExamConfigError,
     OralExamJSONError,
@@ -645,6 +651,215 @@ def render_oral_exam_mode(default_text: str):
     )
 
 
+def render_clinical_case_grade(result: dict):
+    st.markdown("### 病例评分")
+    score_col, level_col = st.columns(2)
+    score_col.metric("总分", f"{result.get('score', 0)}/100")
+    level_col.metric("等级", result.get("level", ""))
+
+    rubric_rows = [
+        {"评分项": "Diagnosis", "得分": result.get("diagnosis_score", 0), "满分": 20},
+        {"评分项": "Evidence", "得分": result.get("evidence_score", 0), "满分": 20},
+        {"评分项": "Differential diagnosis", "得分": result.get("differential_score", 0), "满分": 15},
+        {"评分项": "Additional tests", "得分": result.get("tests_score", 0), "满分": 15},
+        {"评分项": "Treatment plan", "得分": result.get("treatment_score", 0), "满分": 15},
+        {"评分项": "Patient communication", "得分": result.get("patient_communication_score", 0), "满分": 10},
+        {"评分项": "Safety and red flags", "得分": result.get("safety_score", 0), "满分": 5},
+    ]
+    st.dataframe(pd.DataFrame(rubric_rows), use_container_width=True, hide_index=True)
+
+    col_1, col_2 = st.columns(2)
+    with col_1:
+        st.subheader("做得好的地方")
+        strengths = result.get("strengths") or []
+        if strengths:
+            for item in strengths:
+                st.markdown(f"- {item}")
+        else:
+            st.write("暂无。")
+    with col_2:
+        st.subheader("需要补充")
+        missing_points = result.get("missing_points") or []
+        if missing_points:
+            for item in missing_points:
+                st.markdown(f"- {item}")
+        else:
+            st.write("暂无。")
+
+    st.subheader("Model Answer")
+    st.write(result.get("model_answer", ""))
+
+    st.subheader("中文反馈")
+    st.write(result.get("chinese_feedback", ""))
+
+    st.subheader("下一步练习建议")
+    st.info(result.get("next_practice_suggestion", ""))
+
+
+def render_clinical_case_mode(default_text: str):
+    st.session_state.setdefault("clinical_case_history", [])
+
+    st.markdown(
+        """
+        <section class="hero">
+            <div class="eyebrow">AI 临床病例训练</div>
+            <h1 class="hero-title">Clinical Case Training</h1>
+            <p class="hero-subtitle">根据课程内容生成牙科/医学临床病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。</p>
+            <p class="hero-copy">Phase 2 仍然是纯文本模式，不加入语音功能。适合新手用结构化问题一步一步练临床思维。</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="input-panel">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">病例材料</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">粘贴英文课程内容，系统会生成一个虚构但贴近课程重点的临床病例。</div>',
+        unsafe_allow_html=True,
+    )
+
+    case_default_text = st.session_state.get("last_course_text", default_text)
+    case_course_text = st.text_area(
+        "Course Text",
+        value=case_default_text,
+        height=220,
+        placeholder="Paste your English dental or medical course text here...",
+        key="clinical_case_course_text",
+    )
+
+    control_col_1, control_col_2 = st.columns(2)
+    with control_col_1:
+        case_subject = st.selectbox(
+            "Subject",
+            ["Dentistry", "Anatomy", "Pathology", "Pharmacology", "Endodontics", "Periodontology", "Oral Surgery"],
+            key="clinical_case_subject",
+        )
+    with control_col_2:
+        case_difficulty = st.selectbox(
+            "Difficulty",
+            ["easy", "medium", "hard"],
+            index=1,
+            key="clinical_case_difficulty",
+        )
+
+    if st.button("Generate Clinical Case", type="primary", use_container_width=True):
+        if not case_course_text.strip():
+            st.error("请先粘贴英文课程内容。")
+        else:
+            try:
+                with st.spinner("正在生成临床病例..."):
+                    st.session_state["clinical_case_data"] = generate_clinical_case(
+                        case_course_text,
+                        case_subject,
+                        case_difficulty,
+                    )
+                    st.session_state["clinical_case_result"] = None
+                    st.session_state["last_course_text"] = case_course_text
+                st.success("临床病例已生成。")
+            except ClinicalCaseConfigError as exc:
+                st.error(str(exc))
+            except ClinicalCaseJSONError as exc:
+                st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+                st.code(exc.raw_output)
+            except Exception as exc:
+                st.error(f"生成临床病例失败：{exc}")
+
+    case_data = st.session_state.get("clinical_case_data")
+    if case_data:
+        st.markdown("### Clinical Case")
+        st.subheader(case_data.get("case_title", "Clinical Case"))
+
+        case_col_1, case_col_2 = st.columns(2)
+        with case_col_1:
+            st.markdown("**Patient Info**")
+            st.write(case_data.get("patient_info", ""))
+            st.markdown("**Chief Complaint**")
+            st.write(case_data.get("chief_complaint", ""))
+            st.markdown("**History**")
+            st.write(case_data.get("history", ""))
+        with case_col_2:
+            st.markdown("**Clinical Findings**")
+            st.write(case_data.get("clinical_findings", ""))
+            st.markdown("**Radiographic Findings**")
+            st.write(case_data.get("radiographic_findings", ""))
+
+        st.markdown("### Questions")
+        for index, question in enumerate(case_data.get("questions", []), start=1):
+            st.markdown(f"{index}. {question}")
+
+        with st.expander("查看 expected diagnosis / expected points / red flags"):
+            st.markdown("**Expected Diagnosis**")
+            st.write(case_data.get("expected_diagnosis", ""))
+            st.markdown("**Expected Points**")
+            for item in case_data.get("expected_points", []):
+                st.markdown(f"- {item}")
+            st.markdown("**Red Flags**")
+            for item in case_data.get("red_flags", []):
+                st.markdown(f"- {item}")
+
+        student_answer = st.text_area(
+            "Your Clinical Reasoning Answer",
+            height=220,
+            placeholder=(
+                "Answer in English. You can organize it as: diagnosis, evidence, "
+                "differentials, tests, treatment plan, patient explanation."
+            ),
+            key="clinical_case_answer",
+        )
+
+        if st.button("Submit Case Answer", type="primary", use_container_width=True):
+            if not student_answer.strip():
+                st.error("请先输入你的英文病例分析。")
+            else:
+                try:
+                    with st.spinner("正在批改病例分析..."):
+                        result = grade_clinical_case(case_data, student_answer, case_subject)
+                    st.session_state["clinical_case_result"] = result
+                    attempt = {
+                        "subject": case_subject,
+                        "difficulty": case_difficulty,
+                        "case_title": case_data.get("case_title", ""),
+                        "answer": student_answer,
+                        "result": result,
+                    }
+                    st.session_state["clinical_case_history"].insert(0, attempt)
+                    st.session_state["clinical_case_history"] = st.session_state["clinical_case_history"][:10]
+                except ClinicalCaseConfigError as exc:
+                    st.error(str(exc))
+                except ClinicalCaseJSONError as exc:
+                    st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+                    st.code(exc.raw_output)
+                except Exception as exc:
+                    st.error(f"批改失败：{exc}")
+
+    if st.session_state.get("clinical_case_result"):
+        render_clinical_case_grade(st.session_state["clinical_case_result"])
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("### 最近病例训练记录")
+    history = st.session_state.get("clinical_case_history", [])
+    if not history:
+        st.info("还没有病例训练记录。生成病例并提交回答后，会在这里保存最近记录。")
+    else:
+        for index, attempt in enumerate(history[:5], start=1):
+            result = attempt.get("result", {})
+            label = f"{index}. {attempt.get('case_title') or attempt.get('subject')} - {result.get('score', 0)}/100 ({result.get('level', '')})"
+            with st.expander(label):
+                st.markdown(f"**Subject:** {attempt.get('subject', '')}")
+                st.markdown(f"**Your Answer:** {attempt.get('answer', '')}")
+                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback', '')}")
+
+    st.markdown(
+        """
+        <div class="footer">
+            Clinical Case Training 是 DentPilot AI 的文本病例训练模式，用于练习临床思维，不替代真实医疗建议。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 with st.sidebar:
     st.markdown("## 🦷 DentPilot AI")
     st.caption("面向中国留学生的英授牙科学习助手")
@@ -652,10 +867,11 @@ with st.sidebar:
 
     mode = st.radio(
         "学习模式",
-        ["Study Pack", "AI Oral Exam"],
+        ["Study Pack", "AI Oral Exam", "Clinical Case"],
         format_func={
             "Study Pack": "Study Pack / 复习包",
             "AI Oral Exam": "AI Oral Exam / 口试模拟",
+            "Clinical Case": "Clinical Case / 临床病例",
         }.get,
     )
 
@@ -678,12 +894,18 @@ with st.sidebar:
 
         st.markdown("### 当前功能")
         st.markdown("- 中文讲解\n- 术语匹配\n- Quiz 自测\n- Anki CSV / PDF 导出")
-    else:
+    elif mode == "AI Oral Exam":
         st.markdown("### 口试训练")
         st.write("根据英文课程内容生成口试题，输入英文回答后获得结构化评分、中文反馈和追问题。")
 
         st.markdown("### Phase 1")
         st.markdown("- 纯文本模式\n- 不接入语音\n- 不接入 ElevenLabs\n- 不接入语音识别")
+    else:
+        st.markdown("### 临床病例训练")
+        st.write("根据英文课程内容生成病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。")
+
+        st.markdown("### Phase 2")
+        st.markdown("- 纯文本模式\n- 不接入语音\n- 适合新手练临床思维\n- 保存最近病例训练记录")
 
     st.markdown("---")
     if os.getenv("DEEPSEEK_API_KEY"):
@@ -694,6 +916,10 @@ with st.sidebar:
 
 if mode == "AI Oral Exam":
     render_oral_exam_mode(sample)
+    st.stop()
+
+if mode == "Clinical Case":
+    render_clinical_case_mode(sample)
     st.stop()
 
 
