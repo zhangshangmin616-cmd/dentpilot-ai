@@ -8,7 +8,7 @@ Current features:
 - AI Clinical Case Training
 - Weakness Analysis
 - Optional voice tools
-- Realtime Oral Exam with ElevenLabs Conversational AI Widget
+- Realtime Oral Exam launcher for the separate Next.js oral exam app
 
 ## Run Locally
 
@@ -43,34 +43,29 @@ ELEVENLABS_TTS_MODEL=eleven_multilingual_v2
 ELEVENLABS_STT_MODEL=scribe_v2
 ```
 
-## Realtime Oral Exam Setup
+## Realtime Oral Exam Deployment
 
-1. Create an ElevenLabs Conversational AI Agent.
-2. Copy the Agent ID.
-3. Add to local `.env`:
+The realtime oral exam is now a separate Next.js app. The Streamlit page opens it in a new tab instead of embedding the old ElevenLabs widget, which keeps microphone permissions more stable.
+
+Local:
 
 ```env
-ELEVENLABS_AGENT_ID=agent_xxxxxxxxxxxxx
+ORAL_APP_URL=http://localhost:3000
 ```
 
-4. On Streamlit Cloud, add the same value in Secrets:
+Production:
+
+```env
+ORAL_APP_URL=https://dentpilot-oral-app.vercel.app
+```
+
+On Streamlit Cloud, add `ORAL_APP_URL` in Secrets:
 
 ```toml
-ELEVENLABS_AGENT_ID = "agent_xxxxxxxxxxxxx"
+ORAL_APP_URL = "https://dentpilot-oral-app.vercel.app"
 ```
 
-The Realtime Oral Exam page uses the ElevenLabs Conversational AI Widget. It does not require `ELEVENLABS_API_KEY` in the Streamlit app.
-
-## Recommended ElevenLabs Agent System Prompt
-
-Use the prompt in `ELEVENLABS_AGENT_PROMPT.md` when creating your ElevenLabs Conversational AI Agent.
-
-The Streamlit page embeds the ElevenLabs Agent ID and sends these dynamic variables to the widget:
-- `course_context`
-- `subject`
-- `examiner_style`
-
-All oral exam behavior should still be configured inside the ElevenLabs Agent system prompt, not in frontend widget attributes.
+The ElevenLabs Agent ID is configured inside the Next.js app with `NEXT_PUBLIC_ELEVENLABS_AGENT_ID`; Streamlit no longer needs `ELEVENLABS_AGENT_ID` for the realtime oral exam launcher.
 
 ## Safety Boundary
 

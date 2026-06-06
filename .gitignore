@@ -1,8 +1,13 @@
 .env
 .env.*
 !.env.example
+.env.local
+.env*.local
 __pycache__/
 *.pyc
 .venv/
+node_modules/
+.next/
+.streamlit/secrets.toml
 tools/
 *.log
