@@ -1220,6 +1220,23 @@ text = st.text_area(
 )
 st.session_state["last_course_text"] = text
 
+subject = st.selectbox(
+    "科目",
+    [
+        "Dentistry",
+        "Endodontics",
+        "Periodontology",
+        "Oral Surgery",
+        "Oral Pathology",
+        "Dental Anatomy",
+        "Pharmacology",
+        "General Pathology",
+    ],
+    key="study_pack_subject",
+)
+if not subject:
+    subject = "Dentistry"
+
 col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
 with col_a:
     generate = st.button("生成复习包", type="primary", use_container_width=True)
