@@ -1023,11 +1023,12 @@ with st.sidebar:
     st.markdown("### 当前模式")
     st.write(mode_descriptions.get(mode, "DentPilot AI 学习训练模式。"))
 
-    st.markdown("---")
-    if os.getenv("DEEPSEEK_API_KEY"):
-        st.caption("AI 服务已连接")
-    else:
-        st.caption("AI 服务未配置 · 将使用本地备用模式")
+    if mode != "Realtime Oral Exam":
+        st.markdown("---")
+        if os.getenv("DEEPSEEK_API_KEY"):
+            st.caption("AI 服务已连接")
+        else:
+            st.caption("AI 服务未配置 · 将使用本地备用模式")
 
 
 if mode == "AI Written Exam":
