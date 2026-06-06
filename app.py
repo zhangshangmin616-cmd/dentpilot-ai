@@ -255,6 +255,56 @@ st.markdown(
             border-color: rgba(226, 232, 240, 0.18);
         }
 
+        [data-testid="collapsedControl"] {
+            top: 0.85rem;
+            left: 0.85rem;
+            z-index: 999999;
+        }
+
+        button[data-testid="stExpandSidebarButton"],
+        [data-testid="collapsedControl"] button,
+        [data-testid="stSidebarCollapseButton"] button {
+            min-width: 3rem;
+            min-height: 3rem;
+            border: 2px solid rgba(255, 255, 255, 0.92) !important;
+            border-radius: 999px !important;
+            background: #2563eb !important;
+            color: #ffffff !important;
+            box-shadow: 0 16px 36px rgba(15, 23, 42, 0.28), 0 0 0 4px rgba(37, 99, 235, 0.18) !important;
+        }
+
+        button[data-testid="stExpandSidebarButton"]:hover,
+        [data-testid="collapsedControl"] button:hover,
+        [data-testid="stSidebarCollapseButton"] button:hover {
+            background: #1d4ed8 !important;
+            transform: translateY(-1px);
+        }
+
+        button[data-testid="stExpandSidebarButton"] span,
+        button[data-testid="stExpandSidebarButton"] svg,
+        [data-testid="collapsedControl"] button span,
+        [data-testid="collapsedControl"] button svg {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+
+        button[data-testid="stExpandSidebarButton"]::after,
+        [data-testid="collapsedControl"] button::after {
+            content: "菜单";
+            position: absolute;
+            left: 3.25rem;
+            top: 50%;
+            transform: translateY(-50%);
+            padding: 0.25rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.88);
+            color: #ffffff;
+            font-size: 0.78rem;
+            font-weight: 800;
+            white-space: nowrap;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+        }
+
         .main .block-container {
             padding-top: 1.75rem;
             max-width: 1200px;
@@ -461,6 +511,23 @@ st.markdown(
 
             .hero {
                 padding: 1.35rem;
+            }
+
+            [data-testid="collapsedControl"] {
+                top: 0.75rem;
+                left: 0.75rem;
+            }
+
+            button[data-testid="stExpandSidebarButton"],
+            [data-testid="collapsedControl"] button {
+                min-width: 3.4rem;
+                min-height: 3.4rem;
+            }
+
+            button[data-testid="stExpandSidebarButton"]::after,
+            [data-testid="collapsedControl"] button::after {
+                left: 3.65rem;
+                font-size: 0.82rem;
             }
         }
     </style>
