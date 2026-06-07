@@ -69,6 +69,21 @@ def extract_docx_text(uploaded_file) -> tuple[str, int]:
     return "\n\n".join(blocks), len(document.paragraphs)
 
 
+def extract_txt_text(uploaded_file) -> tuple[str, int]:
+    uploaded_file.seek(0)
+    raw_bytes = uploaded_file.read()
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
+        try:
+            text = raw_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = raw_bytes.decode("utf-8", errors="ignore")
+    lines = [line for line in text.splitlines() if line.strip()]
+    return text.strip(), len(lines)
+
+
 def get_pdf_font_name() -> str:
     font_candidates = [
         Path("C:/Windows/Fonts/msyh.ttc"),
@@ -143,11 +158,76 @@ def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
     story = [
         Paragraph("DentPilot AI 复习包", title),
         Paragraph(f"专业方向：{as_paragraph_text(subject)}", body),
+        Paragraph(f"生成深度：{as_paragraph_text(pack.get('generation_depth', '标准复习包'))}", body),
         Spacer(1, 8),
+    ]
+
+    modules = pack.get("study_modules", [])
+    coverage = pack.get("coverage_report", {})
+    if modules:
+        story.extend([
+            Paragraph("覆盖率检查", section),
+            Paragraph(
+                as_paragraph_text(
+                    f"检测到 {coverage.get('detected_sections', len(modules))} 个考试题/章节；"
+                    f"已生成 {coverage.get('generated_sections', len(modules))} 个复习模块；"
+                    f"覆盖率：{coverage.get('coverage_percent', 100)}%。"
+                ),
+                body,
+            ),
+            Paragraph("逐题讲解", section),
+        ])
+        for module in modules:
+            module_title = f"Question {module.get('section_number')}: {module.get('title', '')}"
+            story.append(Paragraph(as_paragraph_text(module_title), section))
+            story.append(Paragraph("<b>中文核心讲解</b>", body))
+            story.append(Paragraph(as_paragraph_text(module.get("chinese_core_explanation", "")), body))
+            story.append(Paragraph("<b>Must-know points</b>", body))
+            for item in module.get("must_know", []):
+                story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+            story.append(Paragraph("<b>Common mistakes</b>", body))
+            for item in module.get("common_mistakes", []):
+                story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+            story.append(Paragraph("<b>Likely oral exam questions</b>", body))
+            for item in module.get("oral_exam_questions", []):
+                story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+            story.append(Paragraph("<b>Short answer template</b>", body))
+            story.append(Paragraph(as_paragraph_text(module.get("short_answer_template", "")), body))
+            story.append(Paragraph("<b>Follow-up questions</b>", body))
+            for item in module.get("follow_up_questions", []):
+                story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+            story.append(Paragraph("<b>Anki cards</b>", body))
+            for card in module.get("flashcards", []):
+                story.append(Paragraph(
+                    as_paragraph_text(f"{card.get('type', 'card')}: {card.get('front', '')} -> {card.get('back', '')}"),
+                    body,
+                ))
+
+        story.append(Paragraph("Quiz / 口试题库", section))
+        for index, q in enumerate(pack.get("quiz", []), start=1):
+            options = q.get("options", [])
+            option_text = "<br/>".join(as_paragraph_text(option) for option in options)
+            quiz_text = (
+                f"<b>Q{index}. [{as_paragraph_text(q.get('question_type', 'quiz'))}] "
+                f"{as_paragraph_text(q.get('question', ''))}</b><br/>"
+                f"{option_text}<br/>"
+                f"<b>答案：</b> {as_paragraph_text(q.get('answer', ''))}<br/>"
+                f"<b>解析：</b> {as_paragraph_text(q.get('explanation_zh', ''))}"
+            )
+            story.append(Paragraph(quiz_text, body))
+
+        story.extend([
+            Paragraph("考前总结", section),
+            Paragraph(as_paragraph_text(pack.get("exam_summary", "")), body),
+        ])
+        doc.build(story)
+        return buffer.getvalue()
+
+    story.extend([
         Paragraph("中文讲解", section),
         Paragraph(as_paragraph_text(pack.get("chinese_explanation", "")), body),
         Paragraph("术语表", section),
-    ]
+    ])
 
     glossary = pack.get("glossary", [])
     if glossary:
@@ -1192,7 +1272,7 @@ st.markdown(
 st.markdown('<div class="input-panel">', unsafe_allow_html=True)
 st.markdown('<div class="section-label">生成复习包</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-copy">上传 PDF / Word（.docx），或粘贴英文牙科 lecture、教材段落、PPT 文本。</div>',
+    '<div class="section-copy">上传 PDF / Word（.docx）/ TXT，或粘贴英文牙科 lecture、教材段落、PPT 文本。</div>',
     unsafe_allow_html=True,
 )
 
@@ -1213,9 +1293,9 @@ st.markdown(
 )
 
 uploaded_course_file = st.file_uploader(
-    "上传 PDF 或 Word 课程资料",
-    type=["pdf", "docx"],
-    help="支持英文 lecture PDF、Word（.docx）、教材节选或课件讲义。可选中文本 PDF 和 .docx 的提取效果最好。",
+    "上传 PDF / Word / TXT 课程资料",
+    type=["pdf", "docx", "txt"],
+    help="支持英文 lecture PDF、Word（.docx）、TXT、教材节选或课件讲义。可选中文本 PDF、.docx 和 .txt 的提取效果最好。",
 )
 
 uploaded_text = ""
@@ -1230,15 +1310,21 @@ if uploaded_course_file is not None:
             with st.spinner("Extracting text from Word document..."):
                 uploaded_text, paragraph_count = extract_docx_text(uploaded_course_file)
             source_label = f"Word 文档的 {paragraph_count} 个段落"
+        elif file_suffix == ".txt":
+            with st.spinner("Extracting text from TXT file..."):
+                uploaded_text, line_count = extract_txt_text(uploaded_course_file)
+            source_label = f"TXT 文件的 {line_count} 行"
         else:
             source_label = "课程文档"
-            st.warning("暂时只支持 PDF 和 Word（.docx）文件。")
+            st.warning("暂时只支持 PDF、Word（.docx）和 TXT 文件。")
         if uploaded_text.strip():
             st.success(f"已从 {source_label} 中提取文本。生成前你仍然可以编辑。")
         elif file_suffix == ".pdf":
             st.warning("没有从这个 PDF 中提取到可选中文本。如果这是扫描版 PDF，需要先做 OCR。")
         elif file_suffix == ".docx":
             st.warning("没有从这个 Word 文档中提取到文本。请确认文档不是空白或受保护文件。")
+        elif file_suffix == ".txt":
+            st.warning("没有从这个 TXT 文件中提取到文本。请确认文件不是空白。")
     except Exception as exc:
         st.error(f"无法提取这个课程文档的文本：{exc}")
 
@@ -1246,7 +1332,7 @@ text = st.text_area(
     "英文牙科 / 医学课程内容",
     value=uploaded_text or sample,
     height=220,
-    placeholder="在这里粘贴英文牙科 lecture、PPT、Word 或教材内容...",
+    placeholder="在这里粘贴英文牙科 lecture、PPT、Word、TXT 或教材内容...",
 )
 st.session_state["last_course_text"] = text
 
@@ -1267,6 +1353,14 @@ subject = st.selectbox(
 if not subject:
     subject = "Dentistry"
 
+generation_depth = st.selectbox(
+    "生成深度",
+    ["快速总结", "标准复习包", "考前冲刺包", "详细逐题版"],
+    index=1,
+    help="大文件建议使用“标准复习包”或“详细逐题版”，系统会按题号/章节逐个生成，避免后半部分被忽略。",
+)
+st.caption("真实考试资料会按题号或章节拆分生成。标准版默认每题都有重点；详细逐题版覆盖最多，但生成时间更长。")
+
 col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
 with col_a:
     generate = st.button("生成复习包", type="primary", use_container_width=True)
@@ -1278,10 +1372,11 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 if generate:
     if not text.strip():
-        st.error("请先粘贴英文课程内容，或上传 PDF / Word（.docx）文档。")
+        st.error("请先粘贴英文课程内容，或上传 PDF / Word（.docx）/ TXT 文档。")
         st.stop()
 
-    pack = generate_study_pack(text, subject)
+    with st.spinner("正在按题号/章节生成复习包，大文件可能需要几分钟..."):
+        pack = generate_study_pack(text, subject, generation_depth)
 
     st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
     st.markdown("### 复习包")
@@ -1300,47 +1395,127 @@ if generate:
         use_container_width=True,
     )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["中文讲解", "术语表", "Quiz 自测", "Anki 卡片", "考前总结"]
+    modules = pack.get("study_modules", [])
+    coverage = pack.get("coverage_report", {})
+    detected_sections = coverage.get("detected_sections", len(modules))
+    generated_sections = coverage.get("generated_sections", len(modules))
+    coverage_percent = coverage.get("coverage_percent", 100 if modules else 0)
+
+    if modules:
+        st.info(
+            f"检测到 {detected_sections} 个考试题/章节，已生成 {generated_sections} 个复习模块，"
+            f"覆盖率：{coverage_percent}%。"
+        )
+        if coverage.get("has_missing"):
+            st.warning("部分章节未生成，请使用详细逐题版或减少上传内容。")
+
+    tab_overview, tab_modules, tab_terms, tab_oral, tab_quiz, tab_anki, tab_summary, tab_coverage = st.tabs(
+        ["总览", "逐题讲解", "高频术语", "口试题库", "Quiz", "Anki", "考前总结", "覆盖率检查"]
     )
 
-    with tab1:
-        st.subheader("中文讲解")
-        st.write(pack["chinese_explanation"])
-        st.subheader("核心概念")
-        for item in pack["key_concepts"]:
-            st.markdown(f"- {item}")
+    with tab_overview:
+        st.subheader("总览")
+        st.write(pack.get("exam_summary", ""))
+        if modules:
+            overview_rows = [
+                {
+                    "题号/章节": module.get("section_number"),
+                    "标题": module.get("title"),
+                    "Must-know 数": len(module.get("must_know", [])),
+                    "Quiz 数": len(module.get("quiz", [])),
+                    "Anki 数": len(module.get("flashcards", [])),
+                }
+                for module in modules
+            ]
+            st.dataframe(pd.DataFrame(overview_rows), use_container_width=True)
+        else:
+            st.write(pack.get("chinese_explanation", ""))
+            st.subheader("核心概念")
+            for item in pack.get("key_concepts", []):
+                st.markdown(f"- {item}")
 
-    with tab2:
-        st.subheader("中英医学术语表")
-        if pack["glossary"]:
+    with tab_modules:
+        st.subheader("逐题讲解")
+        if modules:
+            for module in modules:
+                title_text = f"Question {module.get('section_number')}: {module.get('title', '')}"
+                with st.expander(title_text, expanded=False):
+                    st.markdown("**中文核心讲解**")
+                    st.write(module.get("chinese_core_explanation", ""))
+                    st.markdown("**Must-know points**")
+                    for item in module.get("must_know", []):
+                        st.markdown(f"- {item}")
+                    st.markdown("**Common mistakes**")
+                    for item in module.get("common_mistakes", []):
+                        st.markdown(f"- {item}")
+                    st.markdown("**Short answer template**")
+                    st.write(module.get("short_answer_template", ""))
+                    if module.get("source_excerpt"):
+                        with st.expander("原文片段"):
+                            st.write(module.get("source_excerpt"))
+        else:
+            st.write(pack.get("chinese_explanation", ""))
+
+    with tab_terms:
+        st.subheader("高频术语")
+        if pack.get("glossary"):
             df_terms = pd.DataFrame(pack["glossary"])
             st.dataframe(df_terms, use_container_width=True)
             csv_terms = df_terms.to_csv(index=False).encode("utf-8-sig")
             st.download_button("下载术语表 CSV", csv_terms, "glossary.csv", "text/csv")
         else:
-            st.info("没有匹配到内置术语。你可以在 glossary.py 里继续添加。")
+            st.info("没有生成术语表。")
 
-    with tab3:
-        st.subheader("自测题")
-        for i, q in enumerate(pack["quiz"], start=1):
-            st.markdown(f"**Q{i}. {q['question']}**")
-            for option in q["options"]:
-                st.write(f"- {option}")
-            with st.expander("查看答案与中文解析"):
-                st.write(f"答案：{q['answer']}")
-                st.write(q["explanation_zh"])
+    with tab_oral:
+        st.subheader("口试题库")
+        if modules:
+            for module in modules:
+                with st.expander(f"Question {module.get('section_number')}: {module.get('title', '')}"):
+                    st.markdown("**Likely oral exam questions**")
+                    for item in module.get("oral_exam_questions", []):
+                        st.markdown(f"- {item}")
+                    st.markdown("**Follow-up questions**")
+                    for item in module.get("follow_up_questions", []):
+                        st.markdown(f"- {item}")
+        else:
+            for q in pack.get("quiz", []):
+                st.markdown(f"- {q.get('question', '')}")
 
-    with tab4:
+    with tab_quiz:
+        st.subheader("Quiz")
+        if modules:
+            for module in modules:
+                with st.expander(f"Question {module.get('section_number')}: {module.get('title', '')}"):
+                    for i, q in enumerate(module.get("quiz", []), start=1):
+                        st.markdown(f"**{i}. [{q.get('question_type', 'quiz')}] {q.get('question', '')}**")
+                        for option in q.get("options", []):
+                            st.write(f"- {option}")
+                        with st.expander("查看答案与中文解析"):
+                            st.write(f"答案：{q.get('answer', '')}")
+                            st.write(q.get("explanation_zh", ""))
+        else:
+            for i, q in enumerate(pack.get("quiz", []), start=1):
+                st.markdown(f"**Q{i}. {q.get('question', '')}**")
+                for option in q.get("options", []):
+                    st.write(f"- {option}")
+                with st.expander("查看答案与中文解析"):
+                    st.write(f"答案：{q.get('answer', '')}")
+                    st.write(q.get("explanation_zh", ""))
+
+    with tab_anki:
         st.subheader("Anki 卡片")
-        df_cards = pd.DataFrame(pack["flashcards"])
+        df_cards = pd.DataFrame(pack.get("flashcards", []))
         st.dataframe(df_cards, use_container_width=True)
 
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["Front", "Back", "Tags"])
-        for card in pack["flashcards"]:
-            writer.writerow([card["front"], card["back"], f"medstudy::{subject}::{card['type']}"])
+        for card in pack.get("flashcards", []):
+            writer.writerow([
+                card.get("front", ""),
+                card.get("back", ""),
+                f"medstudy::{subject}::{card.get('type', 'concept')}",
+            ])
         st.download_button(
             "下载 Anki CSV",
             output.getvalue().encode("utf-8-sig"),
@@ -1348,10 +1523,24 @@ if generate:
             "text/csv",
         )
 
-    with tab5:
+    with tab_summary:
         st.subheader("考前总结")
-        st.write(pack["exam_summary"])
-        st.info("真实商业版可以在这里加入：PDF 导出、课程文件夹、错题本、会员限制。")
+        st.write(pack.get("exam_summary", ""))
+        if modules:
+            st.markdown("**考前冲刺顺序**")
+            st.write("1. 先背每题 Must-know points；2. 再看 Common mistakes；3. 最后用口试题库自测英文表达。")
+        st.info("PDF 导出已包含逐题讲解、口试题、易错点、Anki 卡片和覆盖率报告。")
+
+    with tab_coverage:
+        st.subheader("覆盖率检查")
+        st.metric("检测到的问题/章节", detected_sections)
+        st.metric("实际生成的问题/章节", generated_sections)
+        st.metric("覆盖率", f"{coverage_percent}%")
+        if coverage.get("missing_sections"):
+            st.warning(f"遗漏章节：{coverage.get('missing_sections')}")
+        elif modules:
+            st.success("没有检测到遗漏。")
+        st.write(f"检测方式：{coverage.get('detection_method', 'legacy')}")
     st.markdown("</div>", unsafe_allow_html=True)
 else:
     st.info("点击“生成复习包”开始。")

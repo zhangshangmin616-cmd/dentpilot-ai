@@ -223,6 +223,427 @@ def safe_json_loads(content: str) -> Dict[str, Any]:
     return json.loads(content)
 
 
+def normalize_document_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def detect_exam_sections(text: str) -> List[Dict[str, Any]]:
+    """
+    检测考试题/章节。优先识别 1. / 1) 这类编号，避免长文只处理开头。
+    """
+    normalized = normalize_document_text(text)
+    if not normalized:
+        return []
+
+    numbered_pattern = re.compile(
+        r"(?ms)^\s*(\d{1,3})[\.\)]\s+(.+?)(?=^\s*\d{1,3}[\.\)]\s+|\Z)"
+    )
+    numbered_matches = list(numbered_pattern.finditer(normalized))
+    if len(numbered_matches) >= 2:
+        sections = []
+        for fallback_index, match in enumerate(numbered_matches, start=1):
+            number = int(match.group(1))
+            body = match.group(2).strip()
+            first_line = body.split("\n", 1)[0].strip()
+            title = re.sub(r"\s+", " ", first_line)[:120] or f"Question {number}"
+            sections.append({
+                "number": number,
+                "title": title,
+                "text": body,
+                "detected_by": "numbered_question",
+                "fallback_index": fallback_index,
+            })
+        return sections
+
+    heading_pattern = re.compile(
+        r"(?ms)^\s*(?:Question|Q|Topic|Chapter|Section)\s+(\d{1,3})[:\.\)]?\s+(.+?)(?=^\s*(?:Question|Q|Topic|Chapter|Section)\s+\d{1,3}[:\.\)]?\s+|\Z)",
+        re.IGNORECASE,
+    )
+    heading_matches = list(heading_pattern.finditer(normalized))
+    if len(heading_matches) >= 2:
+        sections = []
+        for fallback_index, match in enumerate(heading_matches, start=1):
+            number = int(match.group(1))
+            body = match.group(2).strip()
+            first_line = body.split("\n", 1)[0].strip()
+            sections.append({
+                "number": number,
+                "title": re.sub(r"\s+", " ", first_line)[:120] or f"Question {number}",
+                "text": body,
+                "detected_by": "heading",
+                "fallback_index": fallback_index,
+            })
+        return sections
+
+    # 没有明确题号时，按长度切块，至少保证后半部分不会消失。
+    chunk_size = 4500
+    chunks = []
+    paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
+    current = ""
+    for paragraph in paragraphs:
+        if current and len(current) + len(paragraph) > chunk_size:
+            chunks.append(current.strip())
+            current = paragraph
+        else:
+            current = f"{current}\n\n{paragraph}".strip()
+    if current:
+        chunks.append(current.strip())
+
+    if not chunks:
+        chunks = [normalized[:chunk_size]]
+
+    return [
+        {
+            "number": index,
+            "title": f"Section {index}",
+            "text": chunk,
+            "detected_by": "length_chunk",
+            "fallback_index": index,
+        }
+        for index, chunk in enumerate(chunks, start=1)
+    ]
+
+
+def depth_settings(depth: str) -> Dict[str, Any]:
+    settings = {
+        "快速总结": {
+            "mode_name": "精简版",
+            "detail": "concise preview, but still one module per detected section",
+            "max_section_chars": 3500,
+            "max_tokens": 1800,
+        },
+        "标准复习包": {
+            "mode_name": "标准版",
+            "detail": "balanced exam-focused notes for every section",
+            "max_section_chars": 5500,
+            "max_tokens": 2600,
+        },
+        "考前冲刺包": {
+            "mode_name": "考前冲刺版",
+            "detail": "high-yield points, common mistakes, oral exam framing",
+            "max_section_chars": 5000,
+            "max_tokens": 2400,
+        },
+        "详细逐题版": {
+            "mode_name": "详细版",
+            "detail": "cover as much material as possible for each question or section",
+            "max_section_chars": 8000,
+            "max_tokens": 3600,
+        },
+    }
+    return settings.get(depth, settings["标准复习包"])
+
+
+def ensure_list(value, fallback: List[str] | None = None) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return fallback or []
+    return [value]
+
+
+def build_section_fallback_module(section: Dict[str, Any], subject: str, error_message: str = "") -> Dict[str, Any]:
+    section_text = clean_text(section.get("text", ""))
+    terms = find_terms(section_text)
+    title = section.get("title") or f"Section {section.get('number', '')}"
+    if terms:
+        must_know = [
+            f"Define {term['english']} and explain its Chinese meaning: {term['chinese']}."
+            for term in terms[:4]
+        ]
+    else:
+        must_know = [
+            f"能够用英文解释本题主题：{title}",
+            "说明核心定义、机制、临床意义和考试常见问法。",
+            "用结构化短答案回答，而不是只背零散词汇。",
+        ]
+
+    quiz = [
+        {
+            "question_type": "mcq",
+            "question": f"Which point is most important when answering an oral exam question about {title}?",
+            "options": ["A. Definition and mechanism", "B. Ignore clinical relevance", "C. Only translate words", "D. Skip examples"],
+            "answer": "A. Definition and mechanism",
+            "explanation_zh": "口试回答应优先覆盖定义、机制和临床意义。",
+        },
+        {
+            "question_type": "mcq",
+            "question": f"What should you avoid when discussing {title}?",
+            "options": ["A. Structured answer", "B. Common mistakes", "C. Vague one-sentence answer", "D. Key terms"],
+            "answer": "C. Vague one-sentence answer",
+            "explanation_zh": "本地备用模式仍提醒你避免空泛回答。",
+        },
+        {
+            "question_type": "oral",
+            "question": f"Explain {title} as if you are answering a dental oral exam.",
+            "options": [],
+            "answer": "Use definition, mechanism, clinical relevance, and one example.",
+            "explanation_zh": "这是一道口试题，重点是英文组织能力。",
+        },
+        {
+            "question_type": "short_answer",
+            "question": f"Write a short exam answer template for {title}.",
+            "options": [],
+            "answer": "Definition -> key mechanism -> clinical relevance -> common mistake.",
+            "explanation_zh": "短答题需要有清晰结构。",
+        },
+    ]
+
+    cards = [
+        {"front": f"Term card: {title}", "back": "写出核心英文术语和中文含义。", "type": "term"},
+        {"front": f"Concept card: {title}", "back": "解释定义、机制和临床意义。", "type": "concept"},
+        {"front": f"Exam answer card: {title}", "back": "用 4 句英文组织口试答案。", "type": "exam"},
+    ]
+
+    return {
+        "section_number": section.get("number"),
+        "title": title,
+        "source_excerpt": section_text[:600],
+        "chinese_core_explanation": "当前使用本地备用模式。本模块根据识别到的题目/章节保留覆盖，不会只处理文件开头。",
+        "must_know": must_know,
+        "glossary": terms[:10],
+        "common_mistakes": [
+            "只说中文意思，不会用英文定义。",
+            "缺少机制链或临床意义。",
+            "回答太短，无法覆盖评分点。",
+        ],
+        "oral_exam_questions": [
+            f"Define and explain the clinical relevance of {title}.",
+            f"What common mistake should be avoided when answering {title}?",
+        ],
+        "short_answer_template": "Definition -> mechanism/pathway -> clinical relevance -> exam trap/common mistake.",
+        "follow_up_questions": [
+            "Can you give one clinical example?",
+            "How would you explain this to a patient?",
+        ],
+        "quiz": quiz,
+        "flashcards": cards,
+        "generation_note": error_message,
+    }
+
+
+def build_section_prompt(
+    section: Dict[str, Any],
+    subject: str,
+    depth: str,
+    matched_terms: List[Dict[str, str]],
+) -> str:
+    settings = depth_settings(depth)
+    section_text = section.get("text", "")[:settings["max_section_chars"]]
+    schema_example = {
+        "title": section.get("title", ""),
+        "chinese_core_explanation": "中文核心讲解，覆盖定义、机制、临床意义、考试问法。",
+        "must_know": ["Must-know point 1", "Must-know point 2"],
+        "glossary": [
+            {
+                "english": "term",
+                "chinese": "中文",
+                "definition": "English definition",
+                "chinese_explanation": "中文解释",
+                "category": "Dentistry"
+            }
+        ],
+        "common_mistakes": ["mistake 1", "mistake 2"],
+        "oral_exam_questions": ["English oral exam question 1"],
+        "short_answer_template": "A concise English answer template.",
+        "follow_up_questions": ["follow-up question 1"],
+        "quiz": [
+            {
+                "question_type": "mcq",
+                "question": "English MCQ",
+                "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
+                "answer": "A. ...",
+                "explanation_zh": "中文解析"
+            },
+            {
+                "question_type": "oral",
+                "question": "English oral exam question",
+                "options": [],
+                "answer": "Expected answer outline",
+                "explanation_zh": "中文评分提示"
+            },
+            {
+                "question_type": "short_answer",
+                "question": "English short answer question",
+                "options": [],
+                "answer": "Short answer template",
+                "explanation_zh": "中文解析"
+            }
+        ],
+        "flashcards": [
+            {"front": "Term card", "back": "Answer", "type": "term"},
+            {"front": "Concept card", "back": "Answer", "type": "concept"},
+            {"front": "Exam answer card", "back": "Answer", "type": "exam"}
+        ]
+    }
+
+    return f"""
+You are DentPilot AI, an exam-focused bilingual dental/medical study assistant.
+You must output valid JSON only. Do not output markdown.
+
+CRITICAL COVERAGE RULE:
+You must not skip sections. If there are 28 questions, produce 28 study modules. Do not over-compress. Preserve exam coverage.
+
+Current generation depth:
+{depth} / {settings["mode_name"]}: {settings["detail"]}
+
+Subject:
+{subject}
+
+Detected section/question:
+Question {section.get("number")}: {section.get("title")}
+
+Reference glossary hits:
+{json.dumps(matched_terms[:12], ensure_ascii=False, indent=2)}
+
+Section text:
+{section_text}
+
+Generate one complete study module for this section only.
+Requirements:
+1. 中文核心讲解：解释本题考点、机制链、临床意义、考试问法。
+2. 必背英文术语：提取本题相关高频术语。
+3. Must-know points: at least 5 in English when possible.
+4. Common mistakes: at least 3, especially mistakes Chinese English-taught dental/medical students make.
+5. Likely oral exam questions: at least 3.
+6. Short answer template: concise English answer structure.
+7. Follow-up questions: at least 2.
+8. Quiz: at least 2 MCQ, 1 oral exam question, 1 short answer question.
+9. Anki cards: at least 3 cards: term card, concept card, exam answer card.
+10. Keep content professional, exam-focused, and tied to this exact section.
+
+Return this JSON schema:
+{json.dumps(schema_example, ensure_ascii=False, indent=2)}
+"""
+
+
+def normalize_section_module(module: Dict[str, Any], section: Dict[str, Any], subject: str) -> Dict[str, Any]:
+    if not isinstance(module, dict):
+        module = {}
+    title = str(module.get("title") or section.get("title") or f"Question {section.get('number')}")
+    normalized = {
+        "section_number": section.get("number"),
+        "title": title,
+        "source_excerpt": clean_text(section.get("text", ""))[:600],
+        "chinese_core_explanation": str(module.get("chinese_core_explanation", "")),
+        "must_know": [str(item) for item in ensure_list(module.get("must_know"))],
+        "glossary": module.get("glossary") if isinstance(module.get("glossary"), list) else [],
+        "common_mistakes": [str(item) for item in ensure_list(module.get("common_mistakes"))],
+        "oral_exam_questions": [str(item) for item in ensure_list(module.get("oral_exam_questions"))],
+        "short_answer_template": str(module.get("short_answer_template", "")),
+        "follow_up_questions": [str(item) for item in ensure_list(module.get("follow_up_questions"))],
+        "quiz": module.get("quiz") if isinstance(module.get("quiz"), list) else [],
+        "flashcards": module.get("flashcards") if isinstance(module.get("flashcards"), list) else [],
+    }
+    if not normalized["chinese_core_explanation"]:
+        normalized["chinese_core_explanation"] = "AI 已返回本模块，但缺少中文核心讲解。"
+    if len(normalized["quiz"]) < 4 or len(normalized["flashcards"]) < 3:
+        fallback = build_section_fallback_module(section, subject)
+        normalized["quiz"] = normalized["quiz"] or fallback["quiz"]
+        normalized["flashcards"] = normalized["flashcards"] or fallback["flashcards"]
+    return normalized
+
+
+def generate_section_module(
+    client: OpenAI,
+    model_name: str,
+    section: Dict[str, Any],
+    subject: str,
+    depth: str,
+) -> Dict[str, Any]:
+    matched_terms = find_terms(section.get("text", ""))
+    settings = depth_settings(depth)
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a bilingual dental and medical exam study assistant. "
+                    "You must output valid JSON only. Do not output markdown. "
+                    "You preserve every detected exam section."
+                ),
+            },
+            {
+                "role": "user",
+                "content": build_section_prompt(section, subject, depth, matched_terms),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.25,
+        max_tokens=settings["max_tokens"],
+    )
+    content = response.choices[0].message.content or "{}"
+    return normalize_section_module(safe_json_loads(content), section, subject)
+
+
+def aggregate_modules(
+    modules: List[Dict[str, Any]],
+    sections: List[Dict[str, Any]],
+    subject: str,
+    depth: str,
+    mode: str = "ai",
+    status_message: str = "",
+) -> Dict[str, Any]:
+    glossary = []
+    quiz = []
+    flashcards = []
+    key_concepts = []
+    for module in modules:
+        glossary.extend(module.get("glossary", []))
+        quiz.extend(module.get("quiz", []))
+        flashcards.extend(module.get("flashcards", []))
+        key_concepts.extend(module.get("must_know", [])[:3])
+
+    detected_count = len(sections)
+    generated_count = len(modules)
+    missing_sections = [
+        section.get("number")
+        for section in sections
+        if section.get("number") not in {module.get("section_number") for module in modules}
+    ]
+    coverage_percent = round((generated_count / detected_count) * 100, 1) if detected_count else 0
+    coverage_report = {
+        "detected_sections": detected_count,
+        "generated_sections": generated_count,
+        "coverage_percent": coverage_percent,
+        "missing_sections": missing_sections,
+        "has_missing": bool(missing_sections) or generated_count < detected_count,
+        "detection_method": sections[0].get("detected_by", "") if sections else "",
+    }
+
+    chinese_explanation = "\n\n".join(
+        f"Question {module.get('section_number')}: {module.get('title')}\n{module.get('chinese_core_explanation')}"
+        for module in modules
+    )
+    exam_summary = (
+        f"检测到 {detected_count} 个考试题/章节，已生成 {generated_count} 个复习模块，覆盖率 {coverage_percent}%。\n\n"
+        "考前使用方法：先按“逐题讲解”理解每个模块，再用“口试题库”和“Quiz”检查自己是否能用英文回答。"
+        "重点关注 Must-know points、Common mistakes 和 Short answer template。"
+    )
+
+    if not status_message:
+        status_message = f"已按{depth_settings(depth)['mode_name']}生成逐题复习包。"
+
+    return {
+        "mode": mode,
+        "status_message": status_message,
+        "subject": subject,
+        "generation_depth": depth,
+        "study_modules": modules,
+        "coverage_report": coverage_report,
+        "chinese_explanation": chinese_explanation,
+        "key_concepts": key_concepts,
+        "exam_summary": exam_summary,
+        "glossary": glossary,
+        "quiz": quiz,
+        "flashcards": flashcards,
+    }
+
+
 def normalize_study_pack(data: Dict[str, Any], subject: str, fallback_terms: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     确保返回给 app.py 的字段一定存在。
@@ -279,33 +700,35 @@ def normalize_study_pack(data: Dict[str, Any], subject: str, fallback_terms: Lis
     return data
 
 
-def generate_study_pack(text: str, subject: str) -> Dict[str, Any]:
+def generate_study_pack(text: str, subject: str, depth: str = "标准复习包") -> Dict[str, Any]:
     """
     Streamlit 的 app.py 会调用这个函数。
-    这里改成：优先调用 DeepSeek，失败则使用本地备用版本。
+    这里改成：先检测题号/章节，再逐题生成模块，避免长文后半部分被压缩丢失。
     """
-    text = clean_text(text)
+    raw_text = normalize_document_text(text)
 
-    if not text:
-        return local_fallback_study_pack(text, subject, "没有输入文本。")
+    if not raw_text:
+        return local_fallback_study_pack(raw_text, subject, "没有输入文本。")
+
+    sections = detect_exam_sections(raw_text)
+    if not sections:
+        sections = detect_exam_sections(clean_text(raw_text))
 
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
     if not api_key:
-        return local_fallback_study_pack(
-            text,
+        modules = [
+            build_section_fallback_module(section, subject, "AI 服务未配置。")
+            for section in sections
+        ]
+        return aggregate_modules(
+            modules,
+            sections,
             subject,
-            "AI 服务未配置。"
+            depth,
+            mode="fallback",
+            status_message="AI 服务未配置，当前已按章节生成本地备用复习包。",
         )
-
-    matched_terms = find_terms(text)
-
-    # 为了控制成本，先限制输入长度。后面可以再做长文分段处理。
-    max_chars = 15000
-    text_for_ai = text[:max_chars]
-
-    if len(text) > max_chars:
-        text_for_ai += "\n\n[注意：原文过长，当前版本只处理前 15000 个字符。]"
 
     model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
 
@@ -315,34 +738,39 @@ def generate_study_pack(text: str, subject: str) -> Dict[str, Any]:
             base_url="https://api.deepseek.com"
         )
 
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a bilingual medical education assistant. "
-                        "You must output valid json only. "
-                        "Do not output markdown."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": build_prompt(text_for_ai, subject, matched_terms)
-                }
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-            max_tokens=6000,
+        modules = []
+        skipped_errors = []
+        for section in sections:
+            try:
+                modules.append(generate_section_module(client, model_name, section, subject, depth))
+            except Exception as section_error:
+                skipped_errors.append(f"Question {section.get('number')}: {section_error}")
+                modules.append(build_section_fallback_module(section, subject, str(section_error)))
+
+        mode = "ai" if not skipped_errors else "partial"
+        if skipped_errors:
+            status_message = "部分模块使用了本地备用模式，但系统仍保留了每个检测到的章节。"
+        else:
+            status_message = f"AI 已生成 {len(modules)} 个逐题复习模块。"
+        return aggregate_modules(
+            modules,
+            sections,
+            subject,
+            depth,
+            mode=mode,
+            status_message=status_message,
         )
 
-        content = response.choices[0].message.content or "{}"
-        data = safe_json_loads(content)
-        return normalize_study_pack(data, subject, matched_terms)
-
     except Exception as e:
-        return local_fallback_study_pack(
-            text,
+        modules = [
+            build_section_fallback_module(section, subject, str(e))
+            for section in sections
+        ]
+        return aggregate_modules(
+            modules,
+            sections,
             subject,
-            str(e)
+            depth,
+            mode="fallback",
+            status_message="AI 服务暂时不可用，当前已按章节生成本地备用复习包。",
         )
