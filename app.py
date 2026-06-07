@@ -1266,7 +1266,7 @@ st.markdown(
 
         button[data-testid="stExpandSidebarButton"]::after,
         [data-testid="collapsedControl"] button::after {
-            content: "鑿滃崟";
+            content: "菜单";
             position: absolute;
             left: 3.25rem;
             top: 50%;
