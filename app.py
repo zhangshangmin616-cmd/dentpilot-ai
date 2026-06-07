@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from docx import Document
 from dotenv import load_dotenv
 from pypdf import PdfReader
 from reportlab.lib import colors
@@ -42,6 +43,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 
 def extract_pdf_text(uploaded_file) -> tuple[str, int]:
+    uploaded_file.seek(0)
     pdf = PdfReader(uploaded_file)
     pages = []
     for page in pdf.pages:
@@ -49,6 +51,22 @@ def extract_pdf_text(uploaded_file) -> tuple[str, int]:
         if page_text.strip():
             pages.append(page_text.strip())
     return "\n\n".join(pages), len(pdf.pages)
+
+
+def extract_docx_text(uploaded_file) -> tuple[str, int]:
+    uploaded_file.seek(0)
+    document = Document(uploaded_file)
+    blocks = []
+    for paragraph in document.paragraphs:
+        paragraph_text = paragraph.text.strip()
+        if paragraph_text:
+            blocks.append(paragraph_text)
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                blocks.append(" | ".join(cells))
+    return "\n\n".join(blocks), len(document.paragraphs)
 
 
 def get_pdf_font_name() -> str:
@@ -1174,7 +1192,7 @@ st.markdown(
 st.markdown('<div class="input-panel">', unsafe_allow_html=True)
 st.markdown('<div class="section-label">生成复习包</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-copy">上传 PDF，或粘贴英文牙科 lecture、教材段落、PPT 文本。</div>',
+    '<div class="section-copy">上传 PDF / Word（.docx），或粘贴英文牙科 lecture、教材段落、PPT 文本。</div>',
     unsafe_allow_html=True,
 )
 
@@ -1194,29 +1212,41 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-uploaded_pdf = st.file_uploader(
-    "上传 PDF 课程资料",
-    type=["pdf"],
-    help="支持英文 lecture PDF、教材节选或课件讲义。可选中文本 PDF 的提取效果最好。",
+uploaded_course_file = st.file_uploader(
+    "上传 PDF 或 Word 课程资料",
+    type=["pdf", "docx"],
+    help="支持英文 lecture PDF、Word（.docx）、教材节选或课件讲义。可选中文本 PDF 和 .docx 的提取效果最好。",
 )
 
-pdf_text = ""
-if uploaded_pdf is not None:
+uploaded_text = ""
+if uploaded_course_file is not None:
     try:
-        with st.spinner("Extracting text from PDF..."):
-            pdf_text, page_count = extract_pdf_text(uploaded_pdf)
-        if pdf_text.strip():
-            st.success(f"已从 PDF 的 {page_count} 页中提取文本。生成前你仍然可以编辑。")
+        file_suffix = Path(uploaded_course_file.name).suffix.lower()
+        if file_suffix == ".pdf":
+            with st.spinner("Extracting text from PDF..."):
+                uploaded_text, page_count = extract_pdf_text(uploaded_course_file)
+            source_label = f"PDF 的 {page_count} 页"
+        elif file_suffix == ".docx":
+            with st.spinner("Extracting text from Word document..."):
+                uploaded_text, paragraph_count = extract_docx_text(uploaded_course_file)
+            source_label = f"Word 文档的 {paragraph_count} 个段落"
         else:
+            source_label = "课程文档"
+            st.warning("暂时只支持 PDF 和 Word（.docx）文件。")
+        if uploaded_text.strip():
+            st.success(f"已从 {source_label} 中提取文本。生成前你仍然可以编辑。")
+        elif file_suffix == ".pdf":
             st.warning("没有从这个 PDF 中提取到可选中文本。如果这是扫描版 PDF，需要先做 OCR。")
+        elif file_suffix == ".docx":
+            st.warning("没有从这个 Word 文档中提取到文本。请确认文档不是空白或受保护文件。")
     except Exception as exc:
-        st.error(f"无法提取这个 PDF 的文本：{exc}")
+        st.error(f"无法提取这个课程文档的文本：{exc}")
 
 text = st.text_area(
     "英文牙科 / 医学课程内容",
-    value=pdf_text or sample,
+    value=uploaded_text or sample,
     height=220,
-    placeholder="在这里粘贴英文牙科 lecture、PPT 或教材内容...",
+    placeholder="在这里粘贴英文牙科 lecture、PPT、Word 或教材内容...",
 )
 st.session_state["last_course_text"] = text
 
@@ -1248,7 +1278,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 if generate:
     if not text.strip():
-        st.error("请先粘贴英文课程内容或上传 PDF。")
+        st.error("请先粘贴英文课程内容，或上传 PDF / Word（.docx）文档。")
         st.stop()
 
     pack = generate_study_pack(text, subject)
