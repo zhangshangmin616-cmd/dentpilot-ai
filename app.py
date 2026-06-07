@@ -178,6 +178,22 @@ def build_auth_payload(data: dict) -> dict:
     }
 
 
+def safe_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def safe_float(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 def apply_auth_payload(payload: dict, restored: bool = False) -> dict | None:
     if not payload.get("access_token") or not payload.get("refresh_token"):
         return None
@@ -685,7 +701,7 @@ def save_written_exam_attempt(attempt: dict) -> dict | None:
             "question": attempt.get("question"),
             "student_answer": attempt.get("answer") or attempt.get("student_answer"),
             "model_answer": attempt.get("model_answer"),
-            "score": result.get("score"),
+            "score": safe_float(result.get("score")),
             "feedback": result.get("chinese_feedback") or result.get("feedback"),
             "covered_points": result.get("covered_points") or [],
             "missing_points": result.get("missing_points") or [],
@@ -705,9 +721,9 @@ def save_clinical_case_attempt(attempt: dict) -> dict | None:
             "case_title": attempt.get("case_title"),
             "case_data": attempt.get("case_data") or {},
             "student_answer": attempt.get("answer") or attempt.get("student_answer"),
-            "score": result.get("score"),
-            "diagnosis_score": result.get("diagnosis_score"),
-            "treatment_score": result.get("treatment_score"),
+            "score": safe_float(result.get("score")),
+            "diagnosis_score": safe_float(result.get("diagnosis_score")),
+            "treatment_score": safe_float(result.get("treatment_score")),
             "missing_points": result.get("missing_points") or [],
             "feedback": result.get("chinese_feedback") or result.get("feedback"),
         },
@@ -726,7 +742,7 @@ def save_oral_exam_attempt(attempt: dict) -> dict | None:
             "session_id": attempt.get("session_id"),
             "question": attempt.get("question"),
             "student_answer": attempt.get("answer") or attempt.get("student_answer"),
-            "score": result.get("score"),
+            "score": safe_float(result.get("score")),
             "covered_points": result.get("covered_points") or [],
             "missing_points": result.get("missing_points") or [],
             "feedback": result.get("chinese_feedback") or result.get("feedback"),
@@ -765,7 +781,10 @@ def increment_usage(kind: str, amount: float = 1) -> dict | None:
     field = field_map.get(kind)
     if not field:
         raise ValueError(f"Unsupported usage kind: {kind}")
-    next_value = float(usage.get(field) or 0) + amount
+    if field == "voice_minutes_used":
+        next_value = safe_float(usage.get(field), 0.0) + safe_float(amount, 0.0)
+    else:
+        next_value = safe_int(usage.get(field), 0) + safe_int(amount, 0)
     row_id = quote(str(usage["id"]), safe="")
     user_id = quote(current_user_id(), safe="")
     today = time.strftime("%Y-%m-%d")
@@ -790,8 +809,8 @@ def update_user_weaknesses_from_attempt(subject: str, topic: str, missing_points
                 "subject": subject,
                 "topic": str(point or topic),
                 "weakness_type": "missing_point" if missing_points else "practice_topic",
-                "score_avg": score,
-                "attempt_count": 1,
+                "score_avg": safe_float(score),
+                "attempt_count": safe_int(1),
             },
         )
 
@@ -1702,7 +1721,10 @@ def render_oral_exam_mode(default_text: str):
                         )
                         increment_usage("text_exam", 1)
                     except Exception as exc:
-                        st.warning(f"笔试记录保存失败：{exc}")
+                        st.warning("笔试记录保存失败，请稍后重试。")
+                        if st.secrets.get("STAGE", "").lower() == "dev" or os.getenv("DENTPILOT_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+                            with st.expander("调试：保存失败详情"):
+                                st.caption(f"{type(exc).__name__}: {exc}")
                     st.session_state["oral_exam_history"].insert(0, attempt)
                     st.session_state["oral_exam_history"] = st.session_state["oral_exam_history"][:10]
                     st.session_state["oral_exam_rounds"].append(attempt)
