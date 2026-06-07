@@ -1361,6 +1361,15 @@ generation_depth = st.selectbox(
 )
 st.caption("真实考试资料会按题号或章节拆分生成。标准版默认每题都有重点；详细逐题版覆盖最多，但生成时间更长。")
 
+expected_section_count = st.number_input(
+    "预期题目数量（可选）",
+    min_value=0,
+    max_value=200,
+    value=0,
+    step=1,
+    help="如果你知道文件里有 28 题，就填 28。系统会优先按连续题号识别，避免 PDF/Word 提取后漏题。",
+)
+
 col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
 with col_a:
     generate = st.button("生成复习包", type="primary", use_container_width=True)
@@ -1376,7 +1385,12 @@ if generate:
         st.stop()
 
     with st.spinner("正在按题号/章节生成复习包，大文件可能需要几分钟..."):
-        pack = generate_study_pack(text, subject, generation_depth)
+        pack = generate_study_pack(
+            text,
+            subject,
+            generation_depth,
+            int(expected_section_count) or None,
+        )
 
     st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
     st.markdown("### 复习包")
@@ -1408,6 +1422,11 @@ if generate:
         )
         if coverage.get("has_missing"):
             st.warning("部分章节未生成，请使用详细逐题版或减少上传内容。")
+        if coverage.get("expected_mismatch"):
+            st.error(
+                f"你填写的预期题目数是 {coverage.get('expected_sections')}，"
+                f"但系统只检测到 {detected_sections} 个。请检查原文提取结果，或把文件另存为 DOCX/TXT 后重试。"
+            )
 
     tab_overview, tab_modules, tab_terms, tab_oral, tab_quiz, tab_anki, tab_summary, tab_coverage = st.tabs(
         ["总览", "逐题讲解", "高频术语", "口试题库", "Quiz", "Anki", "考前总结", "覆盖率检查"]
@@ -1536,10 +1555,21 @@ if generate:
         st.metric("检测到的问题/章节", detected_sections)
         st.metric("实际生成的问题/章节", generated_sections)
         st.metric("覆盖率", f"{coverage_percent}%")
+        if coverage.get("expected_sections"):
+            st.metric("预期题目数量", coverage.get("expected_sections"))
+        if coverage.get("expected_mismatch"):
+            st.error(
+                "检测数量和预期题目数量不一致。建议先查看下方“检测到的题目 / 章节”，"
+                "确认缺的是哪些题；如果 PDF 提取不完整，请改用 DOCX 或 TXT。"
+            )
         if coverage.get("missing_sections"):
             st.warning(f"遗漏章节：{coverage.get('missing_sections')}")
         elif modules:
             st.success("没有检测到遗漏。")
+        detected_titles = coverage.get("detected_titles", [])
+        if detected_titles:
+            st.write("检测到的题目 / 章节：")
+            st.dataframe(pd.DataFrame(detected_titles), use_container_width=True)
         st.write(f"检测方式：{coverage.get('detection_method', 'legacy')}")
     st.markdown("</div>", unsafe_allow_html=True)
 else:

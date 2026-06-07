@@ -230,22 +230,116 @@ def normalize_document_text(text: str) -> str:
     return text.strip()
 
 
-def detect_exam_sections(text: str) -> List[Dict[str, Any]]:
+def build_sections_from_markers(
+    normalized: str,
+    markers: List[re.Match],
+    detected_by: str,
+) -> List[Dict[str, Any]]:
+    sections = []
+    for fallback_index, marker in enumerate(markers, start=1):
+        number = int(marker.group("number"))
+        body_start = marker.end()
+        body_end = markers[fallback_index].start() if fallback_index < len(markers) else len(normalized)
+        body = normalized[body_start:body_end].strip()
+        first_line = body.split("\n", 1)[0].strip()
+        title = re.sub(r"\s+", " ", first_line)[:120] or f"Question {number}"
+        sections.append({
+            "number": number,
+            "title": title,
+            "text": body,
+            "detected_by": detected_by,
+            "fallback_index": fallback_index,
+        })
+    return sections
+
+
+def longest_sequential_marker_run(markers: List[re.Match]) -> List[re.Match]:
+    if len(markers) < 2:
+        return []
+
+    best_run: List[re.Match] = []
+    current_run: List[re.Match] = []
+    previous_number: int | None = None
+
+    for marker in markers:
+        number = int(marker.group("number"))
+        if previous_number is not None and number == previous_number:
+            continue
+        if previous_number is None or number == previous_number + 1:
+            current_run.append(marker)
+        elif number == 1:
+            current_run = [marker]
+        else:
+            if len(current_run) > len(best_run):
+                best_run = current_run
+            current_run = [marker]
+        previous_number = number
+
+    if len(current_run) > len(best_run):
+        best_run = current_run
+
+    return best_run if len(best_run) >= 2 else []
+
+
+def detect_exam_sections(text: str, expected_count: int | None = None) -> List[Dict[str, Any]]:
     """
-    检测考试题/章节。优先识别 1. / 1) 这类编号，避免长文只处理开头。
+    检测考试题/章节。优先识别 1. / 1) / Question 1 这类编号。
+    PDF/DOCX 提取后题号可能不在行首，所以这里同时支持内联连续编号。
     """
     normalized = normalize_document_text(text)
     if not normalized:
         return []
 
-    numbered_pattern = re.compile(
-        r"(?ms)^\s*(\d{1,3})[\.\)]\s+(.+?)(?=^\s*\d{1,3}[\.\)]\s+|\Z)"
+    detection_patterns = [
+        (
+            "line_numbered_question",
+            re.compile(r"(?m)^\s*(?P<number>\d{1,3})[\.\)]\s+(?=\S)"),
+        ),
+        (
+            "inline_numbered_question",
+            re.compile(r"(?<![\w.])(?P<number>\d{1,3})[\.\)]\s+(?=[A-Z][A-Za-z0-9,;:'\"()/-])"),
+        ),
+        (
+            "line_plain_number_question",
+            re.compile(r"(?m)^\s*(?P<number>\d{1,3})\s+(?=[A-Z][A-Za-z0-9,;:'\"()/-])"),
+        ),
+        (
+            "named_heading",
+            re.compile(
+                r"(?im)^\s*(?:Question|Q|Topic|Chapter|Section)\s+(?P<number>\d{1,3})[:\.\)]?\s+(?=\S)"
+            ),
+        ),
+        (
+            "inline_named_heading",
+            re.compile(
+                r"(?i)(?<!\w)(?:Question|Q|Topic|Chapter|Section)\s+(?P<number>\d{1,3})[:\.\)]?\s+(?=[A-Z][A-Za-z0-9,;:'\"()/-])"
+            ),
+        ),
+    ]
+
+    best_sections: List[Dict[str, Any]] = []
+    for detected_by, pattern in detection_patterns:
+        markers = list(pattern.finditer(normalized))
+        marker_run = longest_sequential_marker_run(markers)
+        if not marker_run:
+            continue
+        sections = build_sections_from_markers(normalized, marker_run, detected_by)
+        if expected_count and len(sections) == expected_count:
+            return sections
+        if len(sections) > len(best_sections):
+            best_sections = sections
+
+    if best_sections:
+        return best_sections
+
+    old_numbered_pattern = re.compile(
+        r"(?ms)^\s*(?P<number>\d{1,3})[\.\)]\s+(.+?)(?=^\s*\d{1,3}[\.\)]\s+|\Z)"
     )
-    numbered_matches = list(numbered_pattern.finditer(normalized))
+    numbered_matches = list(old_numbered_pattern.finditer(normalized))
     if len(numbered_matches) >= 2:
         sections = []
         for fallback_index, match in enumerate(numbered_matches, start=1):
-            number = int(match.group(1))
+            number = int(match.group("number"))
             body = match.group(2).strip()
             first_line = body.split("\n", 1)[0].strip()
             title = re.sub(r"\s+", " ", first_line)[:120] or f"Question {number}"
@@ -259,14 +353,14 @@ def detect_exam_sections(text: str) -> List[Dict[str, Any]]:
         return sections
 
     heading_pattern = re.compile(
-        r"(?ms)^\s*(?:Question|Q|Topic|Chapter|Section)\s+(\d{1,3})[:\.\)]?\s+(.+?)(?=^\s*(?:Question|Q|Topic|Chapter|Section)\s+\d{1,3}[:\.\)]?\s+|\Z)",
+        r"(?ms)^\s*(?:Question|Q|Topic|Chapter|Section)\s+(?P<number>\d{1,3})[:\.\)]?\s+(.+?)(?=^\s*(?:Question|Q|Topic|Chapter|Section)\s+\d{1,3}[:\.\)]?\s+|\Z)",
         re.IGNORECASE,
     )
     heading_matches = list(heading_pattern.finditer(normalized))
     if len(heading_matches) >= 2:
         sections = []
         for fallback_index, match in enumerate(heading_matches, start=1):
-            number = int(match.group(1))
+            number = int(match.group("number"))
             body = match.group(2).strip()
             first_line = body.split("\n", 1)[0].strip()
             sections.append({
@@ -587,6 +681,7 @@ def aggregate_modules(
     depth: str,
     mode: str = "ai",
     status_message: str = "",
+    expected_section_count: int | None = None,
 ) -> Dict[str, Any]:
     glossary = []
     quiz = []
@@ -613,6 +708,16 @@ def aggregate_modules(
         "missing_sections": missing_sections,
         "has_missing": bool(missing_sections) or generated_count < detected_count,
         "detection_method": sections[0].get("detected_by", "") if sections else "",
+        "expected_sections": expected_section_count or 0,
+        "expected_mismatch": bool(expected_section_count and detected_count != expected_section_count),
+        "detected_titles": [
+            {
+                "number": section.get("number"),
+                "title": section.get("title", ""),
+                "method": section.get("detected_by", ""),
+            }
+            for section in sections
+        ],
     }
 
     chinese_explanation = "\n\n".join(
@@ -700,7 +805,12 @@ def normalize_study_pack(data: Dict[str, Any], subject: str, fallback_terms: Lis
     return data
 
 
-def generate_study_pack(text: str, subject: str, depth: str = "标准复习包") -> Dict[str, Any]:
+def generate_study_pack(
+    text: str,
+    subject: str,
+    depth: str = "标准复习包",
+    expected_section_count: int | None = None,
+) -> Dict[str, Any]:
     """
     Streamlit 的 app.py 会调用这个函数。
     这里改成：先检测题号/章节，再逐题生成模块，避免长文后半部分被压缩丢失。
@@ -710,9 +820,9 @@ def generate_study_pack(text: str, subject: str, depth: str = "标准复习包")
     if not raw_text:
         return local_fallback_study_pack(raw_text, subject, "没有输入文本。")
 
-    sections = detect_exam_sections(raw_text)
+    sections = detect_exam_sections(raw_text, expected_section_count)
     if not sections:
-        sections = detect_exam_sections(clean_text(raw_text))
+        sections = detect_exam_sections(clean_text(raw_text), expected_section_count)
 
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
@@ -728,6 +838,7 @@ def generate_study_pack(text: str, subject: str, depth: str = "标准复习包")
             depth,
             mode="fallback",
             status_message="AI 服务未配置，当前已按章节生成本地备用复习包。",
+            expected_section_count=expected_section_count,
         )
 
     model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
@@ -759,6 +870,7 @@ def generate_study_pack(text: str, subject: str, depth: str = "标准复习包")
             depth,
             mode=mode,
             status_message=status_message,
+            expected_section_count=expected_section_count,
         )
 
     except Exception as e:
@@ -773,4 +885,5 @@ def generate_study_pack(text: str, subject: str, depth: str = "标准复习包")
             depth,
             mode="fallback",
             status_message="AI 服务暂时不可用，当前已按章节生成本地备用复习包。",
+            expected_section_count=expected_section_count,
         )
