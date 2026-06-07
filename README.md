@@ -43,6 +43,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY = "your_supabase_publishable_key"
 
 Use the Supabase Publishable key only. Do not add the service_role key to Streamlit.
 
+The main Streamlit app keeps users logged in with a browser cookie containing only the Supabase `access_token`, `refresh_token`, expiry time, and basic user id/email. It never stores passwords or service role keys. Logout clears both Streamlit session state and the saved auth cookie.
+
 For DeepSeek study pack, oral exam, clinical case, and weakness analysis:
 
 ```env
