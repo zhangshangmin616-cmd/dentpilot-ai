@@ -433,6 +433,99 @@ def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
     doc.build(story)
     return buffer.getvalue()
 
+
+def build_study_pack_markdown(pack: dict, subject: str) -> bytes:
+    lines = [
+        "# DentPilot AI 复习包",
+        "",
+        f"- Subject: {subject}",
+        f"- Generation depth: {pack.get('generation_depth', '标准复习包')}",
+        "",
+    ]
+    modules = pack.get("study_modules", [])
+    coverage = pack.get("coverage_report", {})
+
+    if modules:
+        lines.extend([
+            "## 覆盖率检查",
+            "",
+            f"- 检测到章节/题目: {coverage.get('detected_sections', len(modules))}",
+            f"- 已生成模块: {coverage.get('generated_sections', len(modules))}",
+            f"- 覆盖率: {coverage.get('coverage_percent', 100)}%",
+            "",
+            "## 逐题讲解",
+            "",
+        ])
+        for module in modules:
+            lines.extend([
+                f"### Question {module.get('section_number')}: {module.get('title', '')}",
+                "",
+                "#### 中文核心讲解",
+                str(module.get("chinese_core_explanation", "")),
+                "",
+                "#### Must-know points",
+            ])
+            lines.extend(f"- {item}" for item in module.get("must_know", []))
+            lines.extend(["", "#### Common mistakes"])
+            lines.extend(f"- {item}" for item in module.get("common_mistakes", []))
+            lines.extend(["", "#### Likely oral exam questions"])
+            lines.extend(f"- {item}" for item in module.get("oral_exam_questions", []))
+            lines.extend(["", "#### Short answer template", str(module.get("short_answer_template", "")), ""])
+            lines.extend(["#### Follow-up questions"])
+            lines.extend(f"- {item}" for item in module.get("follow_up_questions", []))
+            lines.append("")
+    else:
+        lines.extend([
+            "## 中文讲解",
+            "",
+            str(pack.get("chinese_explanation", "")),
+            "",
+        ])
+
+    lines.extend(["## 高频术语", ""])
+    for term in pack.get("glossary", []):
+        lines.append(
+            f"- **{term.get('english', '')}** / {term.get('chinese', '')}: {term.get('definition', '')}"
+        )
+
+    lines.extend(["", "## Quiz", ""])
+    for index, q in enumerate(pack.get("quiz", []), start=1):
+        lines.extend([
+            f"### Q{index}. {q.get('question', '')}",
+            "",
+            *[f"- {option}" for option in q.get("options", [])],
+            "",
+            f"Answer: {q.get('answer', '')}",
+            f"Explanation: {q.get('explanation_zh', '')}",
+            "",
+        ])
+
+    lines.extend(["## Anki Cards", ""])
+    for card in pack.get("flashcards", []):
+        lines.extend([
+            f"- Front: {card.get('front', '')}",
+            f"  Back: {card.get('back', '')}",
+            f"  Type: {card.get('type', 'concept')}",
+            "",
+        ])
+
+    lines.extend(["## 考前总结", "", str(pack.get("exam_summary", "")), ""])
+    return "\n".join(lines).encode("utf-8")
+
+
+def build_anki_csv_bytes(pack: dict, subject: str) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Front", "Back", "Tags"])
+    for card in pack.get("flashcards", []):
+        writer.writerow([
+            card.get("front", ""),
+            card.get("back", ""),
+            f"medstudy::{subject}::{card.get('type', 'concept')}",
+        ])
+    return output.getvalue().encode("utf-8-sig")
+
+
 st.set_page_config(
     page_title="DentPilot AI",
     page_icon="🦷",
@@ -1531,15 +1624,39 @@ if generate:
     elif status_message:
         st.success(status_message)
 
-    pdf_bytes = build_study_pack_pdf(pack, subject)
+    pdf_bytes = None
+    pdf_error = None
+    try:
+        pdf_bytes = build_study_pack_pdf(pack, subject)
+    except Exception as exc:
+        pdf_error = str(exc)
+
+    markdown_bytes = build_study_pack_markdown(pack, subject)
+    anki_csv_bytes = build_anki_csv_bytes(pack, subject)
+    st.session_state["study_pack_result"] = pack
+    st.session_state["study_pack_pdf_bytes"] = pdf_bytes
+    st.session_state["study_pack_md_bytes"] = markdown_bytes
+    st.session_state["anki_csv_bytes"] = anki_csv_bytes
+
+    if pdf_bytes:
+        st.download_button(
+            label="下载 PDF 复习包",
+            data=pdf_bytes,
+            file_name="dentpilot_study_pack.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    else:
+        st.warning(f"PDF 下载失败时，可先下载 Markdown 版本。{pdf_error or ''}")
+
     st.download_button(
-        "导出 PDF 复习包",
-        pdf_bytes,
-        "dentpilot_study_pack.pdf",
-        "application/pdf",
+        label="下载 Markdown 复习包",
+        data=markdown_bytes,
+        file_name="dentpilot_study_pack.md",
+        mime="text/markdown",
         use_container_width=True,
     )
-
+    st.info("手机端点击下载后，请在浏览器下载管理或文件 App 中查看。如果 PDF 无法打开，请先下载 Markdown 版本。")
     modules = pack.get("study_modules", [])
     coverage = pack.get("coverage_report", {})
     detected_sections = coverage.get("detected_sections", len(modules))
@@ -1657,22 +1774,13 @@ if generate:
         df_cards = pd.DataFrame(pack.get("flashcards", []))
         st.dataframe(df_cards, use_container_width=True)
 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["Front", "Back", "Tags"])
-        for card in pack.get("flashcards", []):
-            writer.writerow([
-                card.get("front", ""),
-                card.get("back", ""),
-                f"medstudy::{subject}::{card.get('type', 'concept')}",
-            ])
         st.download_button(
-            "下载 Anki CSV",
-            output.getvalue().encode("utf-8-sig"),
-            "medstudy_anki_cards.csv",
-            "text/csv",
+            label="下载 Anki CSV",
+            data=st.session_state.get("anki_csv_bytes") or build_anki_csv_bytes(pack, subject),
+            file_name="medstudy_anki_cards.csv",
+            mime="text/csv",
+            use_container_width=True,
         )
-
     with tab_summary:
         st.subheader("考前总结")
         st.write(pack.get("exam_summary", ""))
@@ -1704,8 +1812,40 @@ if generate:
         st.write(f"检测方式：{coverage.get('detection_method', 'legacy')}")
     st.markdown("</div>", unsafe_allow_html=True)
 else:
-    st.info("点击“生成复习包”开始。")
-
+    cached_pdf_bytes = st.session_state.get("study_pack_pdf_bytes")
+    cached_md_bytes = st.session_state.get("study_pack_md_bytes")
+    cached_anki_bytes = st.session_state.get("anki_csv_bytes")
+    if cached_pdf_bytes or cached_md_bytes or cached_anki_bytes:
+        st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
+        st.markdown("### 已生成的下载文件")
+        if cached_pdf_bytes:
+            st.download_button(
+                label="下载 PDF 复习包",
+                data=cached_pdf_bytes,
+                file_name="dentpilot_study_pack.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        if cached_md_bytes:
+            st.download_button(
+                label="下载 Markdown 复习包",
+                data=cached_md_bytes,
+                file_name="dentpilot_study_pack.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        if cached_anki_bytes:
+            st.download_button(
+                label="下载 Anki CSV",
+                data=cached_anki_bytes,
+                file_name="medstudy_anki_cards.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        st.info("手机端点击下载后，请在浏览器下载管理或文件 App 中查看。如果 PDF 无法打开，请先下载 Markdown 版本。")
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.info("点击“生成复习包”开始。")
 
 st.markdown(
     """
