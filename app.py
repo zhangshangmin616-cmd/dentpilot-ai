@@ -2105,7 +2105,6 @@ def render_weakness_analysis_mode():
 
 with st.sidebar:
     render_sidebar_account()
-    render_my_learning_summary()
     render_admin_dashboard()
     st.markdown("## 🦷 DentPilot AI")
     st.caption("面向中国留学生的英授牙科学习助手")
@@ -2145,6 +2144,10 @@ with st.sidebar:
             st.caption("AI 服务已连接")
         else:
             st.caption("AI 服务未配置 · 将使用本地备用模式")
+
+
+    st.markdown("---")
+    render_my_learning_summary()
 
 
 if mode == "AI Written Exam":
