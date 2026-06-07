@@ -83,7 +83,7 @@ def get_supabase_auth_config() -> tuple[str, str]:
 def supabase_auth_request(endpoint: str, payload: dict) -> dict:
     supabase_url, publishable_key = get_supabase_auth_config()
     if not supabase_url or not publishable_key:
-        raise RuntimeError("Supabase 登录尚未配置，请在 Streamlit Secrets 中添加 Publishable key。")
+        raise RuntimeError("Supabase \u767b\u5f55\u5c1a\u672a\u914d\u7f6e\uff0c\u8bf7\u5728 Streamlit Secrets \u4e2d\u6dfb\u52a0 Publishable key\u3002")
 
     response = requests.post(
         f"{supabase_url}/auth/v1/{endpoint}",
@@ -116,10 +116,37 @@ def sign_up_with_email(email: str, password: str) -> dict:
     )
 
 
+def auth_debug_enabled() -> bool:
+    return read_config_value("DENTPILOT_AUTH_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+
+
+def record_auth_debug(**values) -> None:
+    if not auth_debug_enabled():
+        return
+    debug = st.session_state.setdefault("auth_debug", {})
+    debug.update(values)
+
+
+def render_auth_debug() -> None:
+    if not auth_debug_enabled():
+        return
+    debug = st.session_state.get("auth_debug", {})
+    st.caption(
+        " | ".join(
+            [
+                f"cookie exists: {'yes' if debug.get('cookie_exists') else 'no'}",
+                f"session user: {'yes' if debug.get('session_user') else 'no'}",
+                f"restored: {'yes' if debug.get('restored_from_cookie') else 'no'}",
+                f"refresh success: {'yes' if debug.get('refresh_success') else 'no'}",
+            ]
+        )
+    )
+
+
 def get_cookie_manager():
-    if "dentpilot_cookie_manager" not in st.session_state:
-        st.session_state["dentpilot_cookie_manager"] = stx.CookieManager()
-    return st.session_state["dentpilot_cookie_manager"]
+    if "cookie_manager" not in st.session_state:
+        st.session_state["cookie_manager"] = stx.CookieManager()
+    return st.session_state["cookie_manager"]
 
 
 def get_auth_headers(access_token: str | None = None) -> dict:
@@ -157,24 +184,33 @@ def apply_auth_payload(payload: dict, restored: bool = False) -> dict | None:
     if not payload.get("access_token") or not payload.get("refresh_token"):
         return None
     user = normalize_supabase_user(payload.get("user"))
+    if not user.get("email") and payload.get("user_email"):
+        user["email"] = payload.get("user_email")
+    st.session_state["auth_session"] = payload
+    st.session_state["auth_user"] = user
     st.session_state["dentpilot_access_token"] = payload.get("access_token")
     st.session_state["dentpilot_refresh_token"] = payload.get("refresh_token")
     st.session_state["dentpilot_expires_at"] = payload.get("expires_at")
     st.session_state["dentpilot_user"] = user
+    record_auth_debug(session_user=True, restored_from_cookie=restored)
     if restored and user.get("email"):
-        st.session_state["dentpilot_auth_restored_message"] = f"已自动登录：{user['email']}"
+        st.session_state["dentpilot_auth_restored_message"] = f"\u5df2\u81ea\u52a8\u767b\u5f55\uff1a{user['email']}"
     return user
 
 
 def save_auth_session(data: dict) -> dict | None:
     payload = build_auth_payload(data)
     user = apply_auth_payload(payload)
-    if user:
-        get_cookie_manager().set(
-            AUTH_COOKIE_NAME,
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            expires_at=datetime.utcnow() + timedelta(days=AUTH_COOKIE_DAYS),
-        )
+    if not user:
+        return None
+    cookie_value = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    get_cookie_manager().set(
+        AUTH_COOKIE_NAME,
+        cookie_value,
+        expires_at=datetime.utcnow() + timedelta(days=AUTH_COOKIE_DAYS),
+    )
+    st.session_state["auth_cookie_recently_saved"] = True
+    record_auth_debug(cookie_exists=True, session_user=True)
     return user
 
 
@@ -195,66 +231,90 @@ def refresh_auth_session(refresh_token: str) -> dict | None:
         "token?grant_type=refresh_token",
         {"refresh_token": refresh_token},
     )
-    return save_auth_session(data)
+    user = save_auth_session(data)
+    record_auth_debug(refresh_success=bool(user))
+    return user
 
 
 def clear_auth_session() -> None:
-    for key in (*AUTH_SESSION_KEYS, "dentpilot_auth_restored_message", "dentpilot_session_expired_message"):
+    keys_to_clear = (
+        *AUTH_SESSION_KEYS,
+        "auth_user",
+        "auth_session",
+        "auth_cookie_recently_saved",
+        "auth_cookie_probe_done",
+        "auth_cookie_probe_pending",
+        "dentpilot_auth_restored_message",
+        "dentpilot_session_expired_message",
+    )
+    for key in keys_to_clear:
         st.session_state.pop(key, None)
     try:
         get_cookie_manager().delete(AUTH_COOKIE_NAME)
     except Exception:
         pass
+    record_auth_debug(cookie_exists=False, session_user=False, restored_from_cookie=False, refresh_success=False)
+
+
+def parse_auth_cookie(raw_cookie) -> dict | None:
+    if not raw_cookie:
+        return None
+    if isinstance(raw_cookie, dict):
+        return raw_cookie
+    try:
+        return json.loads(raw_cookie)
+    except Exception:
+        return None
 
 
 def load_auth_session() -> dict | None:
+    user = st.session_state.get("auth_user") or st.session_state.get("dentpilot_user")
+    if user:
+        record_auth_debug(session_user=True)
+        return user
+
     try:
         raw_cookie = get_cookie_manager().get(AUTH_COOKIE_NAME)
     except Exception:
         raw_cookie = None
-    if not raw_cookie:
+
+    payload = parse_auth_cookie(raw_cookie)
+    record_auth_debug(cookie_exists=bool(payload), session_user=False)
+
+    if not payload:
+        if not st.session_state.get("auth_cookie_probe_done"):
+            st.session_state["auth_cookie_probe_done"] = True
+            st.session_state["auth_cookie_probe_pending"] = True
         return None
 
-    try:
-        payload = raw_cookie if isinstance(raw_cookie, dict) else json.loads(raw_cookie)
-    except Exception:
-        clear_auth_session()
-        return None
-
+    st.session_state["auth_cookie_probe_pending"] = False
     access_token = payload.get("access_token")
     refresh_token = payload.get("refresh_token")
     expires_at = int(payload.get("expires_at") or 0)
 
     if access_token and (not expires_at or expires_at > int(time.time()) + 60):
-        user = fetch_supabase_user(access_token)
-        if user:
-            payload["user"] = normalize_supabase_user(user)
+        user_data = fetch_supabase_user(access_token)
+        if user_data:
+            payload["user"] = normalize_supabase_user(user_data)
             return apply_auth_payload(payload, restored=True)
 
     if refresh_token:
         try:
-            user = refresh_auth_session(refresh_token)
-            if user and user.get("email"):
-                st.session_state["dentpilot_auth_restored_message"] = f"已自动登录：{user['email']}"
-            return user
+            return refresh_auth_session(refresh_token)
         except Exception:
             clear_auth_session()
-            st.session_state["dentpilot_session_expired_message"] = "登录已过期，请重新登录。"
+            st.session_state["dentpilot_session_expired_message"] = "\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002"
             return None
 
-    clear_auth_session()
     return None
 
 
 def get_current_user() -> dict | None:
-    user = st.session_state.get("dentpilot_user")
-    if user:
-        return user
     return load_auth_session()
 
 
 def sign_out_supabase() -> None:
-    access_token = st.session_state.get("dentpilot_access_token")
+    access_token = st.session_state.get("dentpilot_access_token") or (st.session_state.get("auth_session") or {}).get("access_token")
     if not access_token:
         return
     supabase_url, _ = get_supabase_auth_config()
@@ -269,6 +329,7 @@ def sign_out_supabase() -> None:
 
 
 def render_auth_gate() -> None:
+    get_cookie_manager()
     user = get_current_user()
     if user:
         restored_message = st.session_state.pop("dentpilot_auth_restored_message", None)
@@ -276,12 +337,18 @@ def render_auth_gate() -> None:
             st.success(restored_message)
         return
 
+    if st.session_state.pop("auth_cookie_probe_pending", False):
+        st.info("\u6b63\u5728\u68c0\u67e5\u767b\u5f55\u72b6\u6001...")
+        render_auth_debug()
+        if not st.button("\u7ee7\u7eed\u767b\u5f55", use_container_width=True):
+            st.stop()
+
     st.markdown(
         """
         <section class="hero auth-hero">
-            <div class="eyebrow">DentPilot AI 账号系统</div>
-            <h1 class="hero-title">登录 DentPilot AI</h1>
-            <p class="hero-copy">请先登录，系统会保存你的学习记录、口试记录和弱点分析。</p>
+            <div class="eyebrow">DentPilot AI &#36134;&#21495;&#31995;&#32479;</div>
+            <h1 class="hero-title">&#30331;&#24405; DentPilot AI</h1>
+            <p class="hero-copy">&#35831;&#20808;&#30331;&#24405;&#65292;&#31995;&#32479;&#20250;&#20445;&#23384;&#20320;&#30340;&#23398;&#20064;&#35760;&#24405;&#12289;&#21475;&#35797;&#35760;&#24405;&#21644;&#24369;&#28857;&#20998;&#26512;&#12290;</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -291,53 +358,57 @@ def render_auth_gate() -> None:
     if expired_message:
         st.warning(expired_message)
 
-    login_tab, register_tab = st.tabs(["登录", "注册"])
+    render_auth_debug()
+
+    login_tab, register_tab = st.tabs(["\u767b\u5f55", "\u6ce8\u518c"])
     with login_tab:
         with st.form("dentpilot_login_form"):
-            email = st.text_input("邮箱", key="login_email")
-            password = st.text_input("密码", type="password", key="login_password")
-            submitted = st.form_submit_button("登录", use_container_width=True)
+            email = st.text_input("\u90ae\u7bb1", key="login_email")
+            password = st.text_input("\u5bc6\u7801", type="password", key="login_password")
+            submitted = st.form_submit_button("\u767b\u5f55", use_container_width=True)
         if submitted:
             try:
                 data = sign_in_with_email(email.strip(), password)
                 user = save_auth_session(data)
                 if not user:
-                    raise RuntimeError("Supabase 未返回可保存的登录会话。")
-                st.success("登录成功")
-                st.rerun()
+                    raise RuntimeError("Supabase \u672a\u8fd4\u56de\u53ef\u4fdd\u5b58\u7684\u767b\u5f55\u4f1a\u8bdd\u3002")
+                st.success("\u767b\u5f55\u6210\u529f\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u4fdd\u5b58\u3002")
+                st.info("\u5982\u679c\u9875\u9762\u6ca1\u6709\u81ea\u52a8\u8fdb\u5165\u5e94\u7528\uff0c\u8bf7\u624b\u52a8\u5237\u65b0\u4e00\u6b21\u3002")
+                return
             except Exception as exc:
-                st.error(f"登录失败：{exc}")
+                st.error(f"\u767b\u5f55\u5931\u8d25\uff1a{exc}")
 
     with register_tab:
         with st.form("dentpilot_register_form"):
-            email = st.text_input("邮箱", key="register_email")
-            password = st.text_input("密码", type="password", key="register_password")
-            submitted = st.form_submit_button("注册", use_container_width=True)
+            email = st.text_input("\u90ae\u7bb1", key="register_email")
+            password = st.text_input("\u5bc6\u7801", type="password", key="register_password")
+            submitted = st.form_submit_button("\u6ce8\u518c", use_container_width=True)
         if submitted:
             try:
                 data = sign_up_with_email(email.strip(), password)
                 user = save_auth_session(data)
                 if user:
-                    st.success("注册成功，已自动登录。")
-                    st.rerun()
-                else:
-                    st.success("注册成功。如果 Supabase 开启邮箱确认，请先查收邮件，然后再登录。")
+                    st.success("\u6ce8\u518c\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u5e76\u4fdd\u5b58\u767b\u5f55\u72b6\u6001\u3002")
+                    return
+                st.success("\u6ce8\u518c\u6210\u529f\u3002\u5982\u679c Supabase \u5f00\u542f\u90ae\u7bb1\u786e\u8ba4\uff0c\u8bf7\u5148\u67e5\u6536\u90ae\u4ef6\uff0c\u7136\u540e\u518d\u767b\u5f55\u3002")
             except Exception as exc:
-                st.error(f"注册失败：{exc}")
+                st.error(f"\u6ce8\u518c\u5931\u8d25\uff1a{exc}")
 
     st.stop()
 
 
 def render_sidebar_account() -> None:
     user = get_current_user() or {}
-    email = user.get("email") or "当前用户"
-    st.markdown("### 当前用户")
+    email = user.get("email") or "\u5f53\u524d\u7528\u6237"
+    st.markdown("### \u5f53\u524d\u7528\u6237")
     st.caption(str(email))
-    if st.button("退出登录", use_container_width=True):
+    if st.button("\u9000\u51fa\u767b\u5f55", use_container_width=True):
         sign_out_supabase()
         clear_auth_session()
-        st.rerun()
+        st.success("\u5df2\u9000\u51fa\u767b\u5f55\u3002")
+        st.stop()
     st.markdown("---")
+
 
 def extract_pdf_text(uploaded_file) -> tuple[str, int]:
     uploaded_file.seek(0)
