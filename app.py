@@ -116,9 +116,10 @@ def sign_up_with_email(email: str, password: str) -> dict:
     )
 
 
-@st.cache_resource
 def get_cookie_manager():
-    return stx.CookieManager()
+    if "dentpilot_cookie_manager" not in st.session_state:
+        st.session_state["dentpilot_cookie_manager"] = stx.CookieManager()
+    return st.session_state["dentpilot_cookie_manager"]
 
 
 def get_auth_headers(access_token: str | None = None) -> dict:
