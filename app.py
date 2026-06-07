@@ -1583,6 +1583,8 @@ def render_oral_grade_result(result: dict):
 def render_oral_exam_mode(default_text: str):
     st.session_state.setdefault("oral_exam_history", [])
     st.session_state.setdefault("oral_exam_rounds", [])
+    if "oral_student_answer" not in st.session_state:
+        st.session_state["oral_student_answer"] = ""
 
     st.markdown(
         """
@@ -1632,7 +1634,7 @@ def render_oral_exam_mode(default_text: str):
                         oral_difficulty,
                     )
                     st.session_state["oral_exam_result"] = None
-                    st.session_state["oral_student_answer"] = ""
+                    st.session_state["reset_oral_student_answer"] = True
                     st.session_state["oral_exam_rounds"] = []
                     st.session_state["last_course_text"] = oral_course_text
                 st.success("笔试题已生成。")
@@ -1660,7 +1662,9 @@ def render_oral_exam_mode(default_text: str):
             st.markdown("**Model Answer**")
             st.write(question_data.get("model_answer", ""))
 
-        st.session_state.setdefault("oral_student_answer", "")
+        if st.session_state.get("reset_oral_student_answer"):
+            st.session_state["oral_student_answer"] = ""
+            st.session_state["reset_oral_student_answer"] = False
         student_answer = st.text_area(
             "Your English Answer",
             height=180,
@@ -1723,7 +1727,7 @@ def render_oral_exam_mode(default_text: str):
                 "model_answer": "",
             }
             st.session_state["oral_exam_result"] = None
-            st.session_state["oral_student_answer"] = ""
+            st.session_state["reset_oral_student_answer"] = True
             st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
