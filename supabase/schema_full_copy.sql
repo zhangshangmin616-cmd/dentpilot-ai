@@ -38,7 +38,10 @@ create table if not exists public.written_exam_attempts (
   subject text,
   difficulty text,
   course_context text,
+  question_type text,
   question text,
+  options jsonb default '[]'::jsonb,
+  correct_answer text,
   student_answer text,
   model_answer text,
   score numeric,
@@ -47,6 +50,10 @@ create table if not exists public.written_exam_attempts (
   missing_points jsonb default '[]'::jsonb,
   created_at timestamptz default now()
 );
+
+alter table public.written_exam_attempts add column if not exists question_type text;
+alter table public.written_exam_attempts add column if not exists options jsonb default '[]'::jsonb;
+alter table public.written_exam_attempts add column if not exists correct_answer text;
 
 create table if not exists public.oral_exam_attempts (
   id uuid primary key default gen_random_uuid(),

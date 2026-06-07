@@ -1,7 +1,8 @@
-import csv
+﻿import csv
 import io
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -34,6 +35,12 @@ from oral_exam import (
     OralExamJSONError,
     generate_oral_question,
     grade_oral_answer,
+)
+from question_bank_engine import (
+    find_relevant_school_questions,
+    generate_written_question_from_bank,
+    infer_question_focus,
+    load_school_question_bank,
 )
 from realtime_oral_exam import render_realtime_oral_exam_page
 from weakness_analysis import (
@@ -467,7 +474,7 @@ def render_my_learning_summary() -> None:
     weaknesses = summary.get("weaknesses") or []
 
     st.markdown("### 我的学习记录")
-    st.caption(f"今日语音用量：{float(usage.get('voice_minutes_used') or 0):.1f} 分钟")
+    st.caption(f"今日口语用时：{float(usage.get('voice_minutes_used') or 0):.1f} 分钟")
     average_score = summary.get("average_score")
     st.caption(f"近期平均分：{average_score if average_score is not None else '暂无'}")
     st.caption(
@@ -480,10 +487,10 @@ def render_my_learning_summary() -> None:
     if oral_records:
         st.caption(f"最近口试：{oral_records[0].get('topic') or oral_records[0].get('subject')}")
     if weaknesses:
-        weak_topics = "、".join(str(item.get("topic", "")) for item in weaknesses[:3] if item.get("topic"))
-        st.caption(f"弱点主题：{weak_topics or '暂无'}")
+        weak_topics = "，".join(str(item.get("topic", "")) for item in weaknesses[:3] if item.get("topic"))
+        st.caption(f"薄弱题目：{weak_topics or '暂无'}")
     if not any([study_records, written_records, clinical_records, oral_records]):
-        st.caption("还没有学习记录。")
+        st.caption("还没有学习记录，先做一组训练吧。")
     st.markdown("---")
 
 
@@ -505,7 +512,7 @@ def get_service_role_key() -> str:
 def supabase_admin_request(table: str, query: str = "select=*") -> list[dict]:
     service_role_key = get_service_role_key()
     if not service_role_key:
-        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY 未配置。")
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY未配置，请先在服务器端配置服务端密钥。")
     supabase_url, _ = get_supabase_auth_config()
     response = requests.get(
         f"{supabase_url}/rest/v1/{table}?{query}",
@@ -526,7 +533,7 @@ def render_admin_dashboard() -> None:
         return
     with st.expander("管理员总览", expanded=False):
         if not get_service_role_key():
-            st.warning("管理员统计需要在服务器环境变量中配置 SUPABASE_SERVICE_ROLE_KEY。")
+            st.warning("管理员统计需要在服务器环境变量或 Streamlit Secrets 中配置 SUPABASE_SERVICE_ROLE_KEY。")
             return
         try:
             profiles = supabase_admin_request("profiles", "select=id,email,created_at&limit=1000")
@@ -699,6 +706,9 @@ def save_written_exam_attempt(attempt: dict) -> dict | None:
             "difficulty": attempt.get("difficulty"),
             "course_context": attempt.get("course_context"),
             "question": attempt.get("question"),
+            "question_type": attempt.get("question_type"),
+            "options": attempt.get("options") or [],
+            "correct_answer": attempt.get("correct_answer"),
             "student_answer": attempt.get("answer") or attempt.get("student_answer"),
             "model_answer": attempt.get("model_answer"),
             "score": safe_float(result.get("score")),
@@ -929,9 +939,11 @@ def as_paragraph_text(value) -> str:
 
 
 def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
+    """Build a simple PDF report for study pack outputs."""
     buffer = io.BytesIO()
     font_name = get_pdf_font_name()
     styles = getSampleStyleSheet()
+
     body = ParagraphStyle(
         "DentPilotBody",
         parent=styles["BodyText"],
@@ -940,7 +952,7 @@ def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
         leading=15,
         spaceAfter=8,
     )
-    title = ParagraphStyle(
+    title_style = ParagraphStyle(
         "DentPilotTitle",
         parent=styles["Title"],
         fontName=font_name,
@@ -967,239 +979,197 @@ def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
         leftMargin=0.55 * inch,
         topMargin=0.6 * inch,
         bottomMargin=0.6 * inch,
-        title="DentPilot AI 复习包",
+        title="DentPilot AI Study Pack",
     )
 
+    detected_sections = pack.get("coverage_report", {}).get("detected_sections", 0)
+    generated_sections = pack.get("coverage_report", {}).get("generated_sections", 0)
+    coverage_percent = pack.get("coverage_report", {}).get("coverage_percent", 100)
+
     story = [
-        Paragraph("DentPilot AI 复习包", title),
-        Paragraph(f"专业方向：{as_paragraph_text(subject)}", body),
-        Paragraph(f"生成深度：{as_paragraph_text(pack.get('generation_depth', '标准复习包'))}", body),
+        Paragraph("DentPilot AI Study Pack", title_style),
+        Paragraph(f"Subject: {as_paragraph_text(subject)}", body),
+        Paragraph(
+            f"Generation mode: {as_paragraph_text(pack.get('generation_depth', 'standard'))}",
+            body,
+        ),
         Spacer(1, 8),
     ]
 
     modules = pack.get("study_modules", [])
-    coverage = pack.get("coverage_report", {})
     if modules:
-        story.extend([
-            Paragraph("覆盖率检查", section),
-            Paragraph(
-                as_paragraph_text(
-                    f"检测到 {coverage.get('detected_sections', len(modules))} 个考试题/章节；"
-                    f"已生成 {coverage.get('generated_sections', len(modules))} 个复习模块；"
-                    f"覆盖率：{coverage.get('coverage_percent', 100)}%。"
+        story.extend(
+            [
+                Paragraph("Coverage", section),
+                Paragraph(
+                    f"Detected {detected_sections} sections, generated {generated_sections} modules."
+                    f" Coverage {coverage_percent}%.",
+                    body,
                 ),
-                body,
-            ),
-            Paragraph("逐题讲解", section),
-        ])
+                Spacer(1, 6),
+            ]
+        )
+
         for module in modules:
-            module_title = f"Question {module.get('section_number')}: {module.get('title', '')}"
-            story.append(Paragraph(as_paragraph_text(module_title), section))
-            story.append(Paragraph("<b>中文核心讲解</b>", body))
+            title = module.get("title") or module.get("question_title") or "Study module"
+            section_title = module.get("section_number")
+            if section_title:
+                title = f"Question {section_title}: {title}"
+            story.append(Paragraph(as_paragraph_text(title), section_style=section if False else section))
+            story.append(Paragraph("<b>Chinese core explanation</b>", body))
             story.append(Paragraph(as_paragraph_text(module.get("chinese_core_explanation", "")), body))
+
             story.append(Paragraph("<b>Must-know points</b>", body))
             for item in module.get("must_know", []):
                 story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+
             story.append(Paragraph("<b>Common mistakes</b>", body))
             for item in module.get("common_mistakes", []):
                 story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+
             story.append(Paragraph("<b>Likely oral exam questions</b>", body))
             for item in module.get("oral_exam_questions", []):
                 story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+
             story.append(Paragraph("<b>Short answer template</b>", body))
             story.append(Paragraph(as_paragraph_text(module.get("short_answer_template", "")), body))
+
             story.append(Paragraph("<b>Follow-up questions</b>", body))
             for item in module.get("follow_up_questions", []):
                 story.append(Paragraph(as_paragraph_text(f"- {item}"), body))
+
             story.append(Paragraph("<b>Anki cards</b>", body))
             for card in module.get("flashcards", []):
-                story.append(Paragraph(
-                    as_paragraph_text(f"{card.get('type', 'card')}: {card.get('front', '')} -> {card.get('back', '')}"),
-                    body,
-                ))
+                story.append(
+                    Paragraph(
+                        as_paragraph_text(
+                            f"{card.get('type', 'card')}: {card.get('front', '')} -> {card.get('back', '')}"
+                        ),
+                        body,
+                    )
+                )
+            story.append(Spacer(1, 6))
 
-        story.append(Paragraph("Quiz / 口试题库", section))
+        story.append(Paragraph("Quiz", section))
         for index, q in enumerate(pack.get("quiz", []), start=1):
             options = q.get("options", [])
             option_text = "<br/>".join(as_paragraph_text(option) for option in options)
-            quiz_text = (
+            question_text = (
                 f"<b>Q{index}. [{as_paragraph_text(q.get('question_type', 'quiz'))}] "
                 f"{as_paragraph_text(q.get('question', ''))}</b><br/>"
                 f"{option_text}<br/>"
-                f"<b>答案：</b> {as_paragraph_text(q.get('answer', ''))}<br/>"
-                f"<b>解析：</b> {as_paragraph_text(q.get('explanation_zh', ''))}"
+                f"<b>Answer:</b> {as_paragraph_text(q.get('answer', ''))}<br/>"
+                f"<b>Explanation:</b> {as_paragraph_text(q.get('explanation_zh', ''))}"
             )
-            story.append(Paragraph(quiz_text, body))
-
-        story.extend([
-            Paragraph("考前总结", section),
-            Paragraph(as_paragraph_text(pack.get("exam_summary", "")), body),
-        ])
-        doc.build(story)
-        return buffer.getvalue()
-
-    story.extend([
-        Paragraph("中文讲解", section),
-        Paragraph(as_paragraph_text(pack.get("chinese_explanation", "")), body),
-        Paragraph("术语表", section),
-    ])
-
-    glossary = pack.get("glossary", [])
-    if glossary:
-        glossary_rows = [[
-            Paragraph("英文", body),
-            Paragraph("中文", body),
-            Paragraph("定义", body),
-            Paragraph("分类", body),
-        ]]
-        for term in glossary:
-            glossary_rows.append([
-                Paragraph(as_paragraph_text(term.get("english", "")), body),
-                Paragraph(as_paragraph_text(term.get("chinese", "")), body),
-                Paragraph(as_paragraph_text(term.get("definition", "")), body),
-                Paragraph(as_paragraph_text(term.get("category", "")), body),
-            ])
-        glossary_table = Table(glossary_rows, colWidths=[1.25 * inch, 1.15 * inch, 3.0 * inch, 1.2 * inch])
-        glossary_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")),
-            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        story.append(glossary_table)
+            story.append(Paragraph(question_text, body))
     else:
-        story.append(Paragraph("没有匹配到术语。", body))
-
-    story.append(Paragraph("Quiz 自测", section))
-    quiz = pack.get("quiz", [])
-    if quiz:
-        for index, q in enumerate(quiz, start=1):
-            options = q.get("options", [])
-            option_text = "<br/>".join(as_paragraph_text(option) for option in options)
-            quiz_text = (
-                f"<b>Q{index}. {as_paragraph_text(q.get('question', ''))}</b><br/>"
-                f"{option_text}<br/>"
-                f"<b>答案：</b> {as_paragraph_text(q.get('answer', ''))}<br/>"
-                f"<b>解析：</b> {as_paragraph_text(q.get('explanation_zh', ''))}"
-            )
-            story.append(Paragraph(quiz_text, body))
-    else:
-        story.append(Paragraph("没有生成自测题。", body))
-
-    story.extend([
-        Paragraph("考前总结", section),
-        Paragraph(as_paragraph_text(pack.get("exam_summary", "")), body),
-        Paragraph("Anki 卡片", section),
-    ])
-
-    flashcards = pack.get("flashcards", [])
-    if flashcards:
-        flashcard_rows = [[Paragraph("正面", body), Paragraph("背面", body), Paragraph("类型", body)]]
-        for card in flashcards:
-            flashcard_rows.append([
-                Paragraph(as_paragraph_text(card.get("front", "")), body),
-                Paragraph(as_paragraph_text(card.get("back", "")), body),
-                Paragraph(as_paragraph_text(card.get("type", "")), body),
-            ])
-        flashcard_table = Table(flashcard_rows, colWidths=[2.2 * inch, 3.6 * inch, 0.8 * inch])
-        flashcard_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ccfbf1")),
-            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        story.append(flashcard_table)
-    else:
-        story.append(Paragraph("没有生成 Anki 卡片。", body))
+        story.append(Paragraph("Study Notes", section))
+        story.append(Paragraph(as_paragraph_text(pack.get("chinese_explanation", "")), body))
 
     doc.build(story)
     return buffer.getvalue()
 
-
 def build_study_pack_markdown(pack: dict, subject: str) -> bytes:
     lines = [
-        "# DentPilot AI 复习包",
+        "# DentPilot AI Study Pack",
         "",
         f"- Subject: {subject}",
-        f"- Generation depth: {pack.get('generation_depth', '标准复习包')}",
+        f"- Generation depth: {pack.get('generation_depth', 'standard')}",
         "",
     ]
+
     modules = pack.get("study_modules", [])
     coverage = pack.get("coverage_report", {})
 
     if modules:
-        lines.extend([
-            "## 覆盖率检查",
-            "",
-            f"- 检测到章节/题目: {coverage.get('detected_sections', len(modules))}",
-            f"- 已生成模块: {coverage.get('generated_sections', len(modules))}",
-            f"- 覆盖率: {coverage.get('coverage_percent', 100)}%",
-            "",
-            "## 逐题讲解",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Coverage",
+                "",
+                f"- Detected sections: {coverage.get('detected_sections', len(modules))}",
+                f"- Generated sections: {coverage.get('generated_sections', len(modules))}",
+                f"- Coverage: {coverage.get('coverage_percent', 100)}%",
+                "",
+            ]
+        )
         for module in modules:
-            lines.extend([
-                f"### Question {module.get('section_number')}: {module.get('title', '')}",
-                "",
-                "#### 中文核心讲解",
-                str(module.get("chinese_core_explanation", "")),
-                "",
-                "#### Must-know points",
-            ])
+            lines.extend(
+                [
+                    f"### Question {module.get('section_number')}: {module.get('title', '')}",
+                    "",
+                    "#### 中文核心讲解",
+                    str(module.get("chinese_core_explanation", "")),
+                    "",
+                    "#### Must-know points",
+                ]
+            )
             lines.extend(f"- {item}" for item in module.get("must_know", []))
             lines.extend(["", "#### Common mistakes"])
             lines.extend(f"- {item}" for item in module.get("common_mistakes", []))
             lines.extend(["", "#### Likely oral exam questions"])
             lines.extend(f"- {item}" for item in module.get("oral_exam_questions", []))
-            lines.extend(["", "#### Short answer template", str(module.get("short_answer_template", "")), ""])
-            lines.extend(["#### Follow-up questions"])
+            lines.extend([
+                "",
+                "#### Short answer template",
+                str(module.get("short_answer_template", "")),
+                "",
+                "#### Follow-up questions",
+            ])
             lines.extend(f"- {item}" for item in module.get("follow_up_questions", []))
+
+            lines.append("")
+            lines.extend(["#### Quiz / Questions:"])
+            for q in module.get("quiz", []):
+                lines.append(f"- [{q.get('question_type', 'quiz')}] {q.get('question', '')}")
+                if q.get("answer"):
+                    lines.append(f"  Answer: {q.get('answer')}")
+                if q.get("explanation_zh"):
+                    lines.append(f"  Explanation: {q.get('explanation_zh')}")
+            lines.append("")
+
+            lines.append("#### Anki cards")
+            for card in module.get("flashcards", []):
+                lines.append(f"- [{card.get('type', 'concept')}] {card.get('front', '')} -> {card.get('back', '')}")
             lines.append("")
     else:
-        lines.extend([
-            "## 中文讲解",
-            "",
-            str(pack.get("chinese_explanation", "")),
-            "",
-        ])
+        lines.extend(["## Study Notes", "", str(pack.get("chinese_explanation", "")), ""])
 
-    lines.extend(["## 高频术语", ""])
-    for term in pack.get("glossary", []):
-        lines.append(
-            f"- **{term.get('english', '')}** / {term.get('chinese', '')}: {term.get('definition', '')}"
-        )
+    glossary = pack.get("glossary", [])
+    if glossary:
+        lines.extend(["## Glossary", ""])
+        for term in glossary:
+            lines.append(
+                f"- {term.get('english', '')} / {term.get('chinese', '')}: {term.get('definition', '')}"
+            )
 
-    lines.extend(["", "## Quiz", ""])
-    for index, q in enumerate(pack.get("quiz", []), start=1):
-        lines.extend([
-            f"### Q{index}. {q.get('question', '')}",
-            "",
-            *[f"- {option}" for option in q.get("options", [])],
-            "",
-            f"Answer: {q.get('answer', '')}",
-            f"Explanation: {q.get('explanation_zh', '')}",
-            "",
-        ])
+    if pack.get("quiz"):
+        lines.extend(["", "## Quiz", ""])
+        for index, q in enumerate(pack.get("quiz", []), start=1):
+            lines.extend(
+                [
+                    f"### Q{index}. {q.get('question', '')}",
+                    "",
+                    *[f"- {option}" for option in q.get("options", [])],
+                    "",
+                    f"Answer: {q.get('answer', '')}",
+                    f"Explanation: {q.get('explanation_zh', '')}",
+                    "",
+                ]
+            )
 
     lines.extend(["## Anki Cards", ""])
     for card in pack.get("flashcards", []):
-        lines.extend([
-            f"- Front: {card.get('front', '')}",
-            f"  Back: {card.get('back', '')}",
-            f"  Type: {card.get('type', 'concept')}",
-            "",
-        ])
+        lines.extend(
+            [
+                f"- Front: {card.get('front', '')}",
+                f"  Back: {card.get('back', '')}",
+                f"  Type: {card.get('type', 'concept')}",
+                "",
+            ]
+        )
 
     lines.extend(["## 考前总结", "", str(pack.get("exam_summary", "")), ""])
     return "\n".join(lines).encode("utf-8")
-
 
 def build_anki_csv_bytes(pack: dict, subject: str) -> bytes:
     output = io.StringIO()
@@ -1296,7 +1266,7 @@ st.markdown(
 
         button[data-testid="stExpandSidebarButton"]::after,
         [data-testid="collapsedControl"] button::after {
-            content: "菜单";
+            content: "鑿滃崟";
             position: absolute;
             left: 3.25rem;
             top: 50%;
@@ -1556,18 +1526,18 @@ sample = (
 
 
 def render_oral_grade_result(result: dict):
-    st.markdown("### 评分结果")
+    st.markdown("### 笔试结果")
     score_col, level_col = st.columns([1, 1])
-    score_col.metric("总分", f"{result.get('score', 0)}/100")
+    score_col.metric("得分", f"{result.get('score', 0)}/100")
     level_col.metric("等级", result.get("level", ""))
 
     rubric_rows = [
-        {"评分项": "Content Accuracy", "得分": result.get("content_accuracy", 0), "满分": 30},
-        {"评分项": "Completeness", "得分": result.get("completeness", 0), "满分": 20},
-        {"评分项": "Clinical Reasoning", "得分": result.get("clinical_reasoning", 0), "满分": 20},
-        {"评分项": "English Expression", "得分": result.get("english_expression", 0), "满分": 10},
-        {"评分项": "Examiner Interaction", "得分": result.get("examiner_interaction", 0), "满分": 10},
-        {"评分项": "Pronunciation & Fluency", "得分": result.get("pronunciation_fluency", 0), "满分": 10},
+        {"维度": "内容准确度", "得分": result.get("content_accuracy", 0), "权重": 30},
+        {"维度": "完整性", "得分": result.get("completeness", 0), "权重": 20},
+        {"维度": "临床推理", "得分": result.get("clinical_reasoning", 0), "权重": 20},
+        {"维度": "语言表达", "得分": result.get("english_expression", 0), "权重": 10},
+        {"维度": "考官互动", "得分": result.get("examiner_interaction", 0), "权重": 10},
+        {"维度": "发音与流利度", "得分": result.get("pronunciation_fluency", 0), "权重": 10},
     ]
     st.dataframe(pd.DataFrame(rubric_rows), use_container_width=True, hide_index=True)
 
@@ -1579,15 +1549,15 @@ def render_oral_grade_result(result: dict):
             for item in strengths:
                 st.markdown(f"- {item}")
         else:
-            st.write("暂无。")
+            st.write("未识别到明显优点")
     with col_2:
-        st.subheader("缺失要点")
+        st.subheader("待改进")
         missing_points = result.get("missing_points") or []
         if missing_points:
             for item in missing_points:
                 st.markdown(f"- {item}")
         else:
-            st.write("暂无。")
+            st.write("未识别到明显缺失点")
 
     st.subheader("Corrected Answer")
     st.write(result.get("corrected_answer", ""))
@@ -1599,117 +1569,409 @@ def render_oral_grade_result(result: dict):
     st.info(result.get("follow_up_question", ""))
 
 
+WRITTEN_MODES = ["日常练习", "考前模拟", "错题强化"]
+WRITTEN_QUESTION_TYPES = [
+    "自动混合",
+    "MCQ 单选题",
+    "Short Answer 简答题",
+    "Case-based 病例题",
+    "True / False 判断题",
+    "Matching 匹配题",
+]
+
+
+
+def get_recent_wrong_written_topics(limit: int = 30) -> list[str]:
+    """Return unique topics from recent written attempts with weak performance."""
+    wrong_topics: list[str] = []
+    seen: set[str] = set()
+    for attempt in get_recent_written_exam_attempts(limit=limit * 3):
+        score = safe_float(attempt.get("score"), None)
+        missing_points = attempt.get("missing_points") or []
+        topic = str(attempt.get("topic") or "").strip()
+        if not topic:
+            continue
+        if (score is not None and score < 70) or (missing_points and len(missing_points) > 0):
+            if topic not in seen:
+                seen.add(topic)
+                wrong_topics.append(topic)
+            if len(wrong_topics) >= limit:
+                break
+    return wrong_topics
+
+
+def _ensure_written_topic_from_input(raw_topic: str, default_subject: str, previous_wrong_topics: list[str]) -> str:
+    text = (raw_topic or "").strip()
+    if text:
+        return text
+    if previous_wrong_topics:
+        return previous_wrong_topics[0]
+    return f"{default_subject} topic"
+
+
+def _prepare_written_question(
+    exam_topic: str,
+    subject: str,
+    course_context: str,
+    difficulty: str,
+    question_type: str,
+    mode: str,
+    question_seed: int,
+) -> dict:
+    """Generate a written question from school bank first, then fallback to general generator."""
+    match_result = find_relevant_school_questions(exam_topic, subject, course_context, limit=5)
+    bank_item = match_result.get("best_match")
+    generated = generate_written_question_from_bank(
+        {
+            "mode": mode,
+            "question_type": question_type,
+            "topic": exam_topic,
+            "subject": subject,
+            "difficulty": difficulty,
+            "course_context": course_context,
+            "best_match": bank_item,
+            "question_seed": str(question_seed),
+        }
+    )
+    if generated:
+        generated["match_result"] = match_result
+        generated["match_score"] = match_result.get("match_score", 0)
+        generated["match_reason"] = match_result.get("match_reason", "")
+        return generated
+
+    fallback_text = (
+        "Topic: {topic}\n"
+        "Subject: {subject}\n"
+        "Question type: {question_type}\n"
+        "Course Context: {course_context}\n"
+        "Generate one focused exam question in English.\n"
+    ).format(
+        topic=exam_topic,
+        subject=subject,
+        question_type=question_type,
+        course_context=course_context[:6000],
+    )
+    generated = generate_oral_question(fallback_text, subject, difficulty)
+    generated["question_source"] = "fallback_oral_llm"
+    return generated
+
+
+def _answer_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9-]*|[0-9]+", str(text or "").lower())
+        if len(token) > 2
+    }
+
+
+def _point_is_covered(point: str, student_answer: str) -> bool:
+    point_tokens = _answer_tokens(point)
+    if not point_tokens:
+        return False
+    answer_tokens = _answer_tokens(student_answer)
+    overlap = point_tokens.intersection(answer_tokens)
+    return len(overlap) >= max(1, min(3, len(point_tokens) // 2))
+
+
+def _pass_level(score: float) -> str:
+    if score >= 85:
+        return "Excellent"
+    if score >= 70:
+        return "Pass"
+    if score >= 50:
+        return "Borderline"
+    return "Needs improvement"
+
+
+def grade_written_answer(params: dict) -> dict:
+    question_type = str(params.get("question_type", "Short Answer 简答题"))
+    student_answer = str(params.get("student_answer", "")).strip()
+    expected_points = [str(item) for item in params.get("expected_points", []) if str(item).strip()]
+    common_mistakes = [str(item) for item in params.get("common_mistakes", []) if str(item).strip()]
+    correct_answer = str(params.get("correct_answer", "")).strip()
+    model_answer = str(params.get("model_answer", "")).strip()
+
+    if question_type == "MCQ 单选题":
+        normalized_answer = student_answer.strip().upper()[:1]
+        normalized_correct = correct_answer.strip().upper()[:1] or "A"
+        is_correct = normalized_answer == normalized_correct
+        score = 100 if is_correct else 0
+        covered_points = expected_points[:2] if is_correct else []
+        missing_points = [] if is_correct else expected_points[:3]
+        feedback = "选择正确。" if is_correct else f"正确答案是 {normalized_correct}。"
+    else:
+        covered_points = [point for point in expected_points if _point_is_covered(point, student_answer)]
+        missing_points = [point for point in expected_points if point not in covered_points]
+        coverage = len(covered_points) / max(1, len(expected_points))
+        detected_mistakes = [mistake for mistake in common_mistakes if _point_is_covered(mistake, student_answer)]
+        score = max(0, min(100, round(coverage * 85 + (15 if student_answer else 0) - len(detected_mistakes) * 5, 1)))
+        feedback = "答案覆盖了主要要点。" if score >= 70 else "答案还需要补充关键考点。"
+
+    weakness_types = []
+    lower_missing = " ".join(missing_points).lower()
+    for marker, weakness in [
+        ("definition", "definition"),
+        ("classif", "classification"),
+        ("mechanism", "mechanism"),
+        ("pathogenesis", "mechanism"),
+        ("clinical", "clinical_reasoning"),
+        ("treatment", "treatment_plan"),
+        ("material", "material_properties"),
+        ("anatomy", "anatomy"),
+        ("infection", "infection_control"),
+        ("term", "terminology"),
+    ]:
+        if marker in lower_missing and weakness not in weakness_types:
+            weakness_types.append(weakness)
+    if not weakness_types and missing_points:
+        weakness_types.append("exam_structure")
+
+    return {
+        "score": safe_float(score, 0),
+        "pass_level": _pass_level(safe_float(score, 0) or 0),
+        "level": _pass_level(safe_float(score, 0) or 0),
+        "covered_points": covered_points,
+        "missing_points": missing_points,
+        "feedback": feedback,
+        "corrected_answer": model_answer or correct_answer,
+        "chinese_review": (
+            f"{feedback} 已覆盖 {len(covered_points)} / {max(1, len(expected_points))} 个预期要点。"
+            + (" 建议补充：" + "；".join(missing_points[:3]) if missing_points else "")
+        ),
+        "chinese_feedback": (
+            f"{feedback} 已覆盖 {len(covered_points)} / {max(1, len(expected_points))} 个预期要点。"
+            + (" 建议补充：" + "；".join(missing_points[:3]) if missing_points else "")
+        ),
+        "weakness_types": weakness_types,
+        "next_recommended_topic": missing_points[0] if missing_points else params.get("matched_topic") or params.get("topic", ""),
+    }
 def render_oral_exam_mode(default_text: str):
     st.session_state.setdefault("oral_exam_history", [])
     st.session_state.setdefault("oral_exam_rounds", [])
+    st.session_state.setdefault("oral_exam_rounds_target", 1)
+    st.session_state.setdefault("oral_mode", WRITTEN_MODES[0])
+    st.session_state.setdefault("oral_question_type", WRITTEN_QUESTION_TYPES[0])
+    if st.session_state["oral_mode"] not in WRITTEN_MODES:
+        st.session_state["oral_mode"] = WRITTEN_MODES[0]
+    if st.session_state["oral_question_type"] not in WRITTEN_QUESTION_TYPES:
+        st.session_state["oral_question_type"] = WRITTEN_QUESTION_TYPES[0]
+    st.session_state.setdefault("written_question_number", 1)
+    st.session_state.setdefault("oral_rounds_completed", 0)
     if "oral_student_answer" not in st.session_state:
         st.session_state["oral_student_answer"] = ""
+
+    bank_items = load_school_question_bank()
+    bank_available = bool(bank_items)
+    wrong_topics = get_recent_wrong_written_topics()
 
     st.markdown(
         """
         <section class="hero">
             <div class="eyebrow">AI 笔试训练</div>
-            <h1 class="hero-title">DentPilot AI Written Exam</h1>
-            <p class="hero-subtitle">英文笔试训练：生成问题、输入英文答案、结构化评分和中文反馈。</p>
-            <p class="hero-copy">这个模式已经改为纯文本笔试训练；实时语音练习请使用 sidebar 里的 Realtime Oral Exam。</p>
+            <h1 class="hero-title">生成真实口试风格的笔试题</h1>
+            <p class="hero-subtitle">AI 会优先使用学校题库命中题目，再结合课程内容生成高频考点。</p>
+            <p class="hero-copy">模式不同，难度和题目策略不同，适合日常复习、考前模拟和错题强化。</p>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
     st.markdown('<div class="input-panel">', unsafe_allow_html=True)
-    st.markdown('<div class="section-label">笔试材料</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">笔试设置</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-copy">粘贴英文课程内容，或复用刚才 Study Pack 中输入过的文本，生成英文笔试题。</div>',
+        '<div class="section-copy">课程内容可来自 Study Pack、课本或课堂提要；先设置模式，再开始生成题目。</div>',
         unsafe_allow_html=True,
     )
 
+    if not bank_available:
+        st.warning("未找到学校题库，请先添加 data/school_question_bank.json。")
+
+    selected_mode = st.selectbox("笔试模式", WRITTEN_MODES, index=WRITTEN_MODES.index(st.session_state["oral_mode"]))
+    selected_type = st.selectbox("题型", WRITTEN_QUESTION_TYPES, index=WRITTEN_QUESTION_TYPES.index(st.session_state["oral_question_type"]))
+
     oral_default_text = st.session_state.get("last_course_text", default_text)
     oral_course_text = st.text_area(
-        "Course Text",
+        "课程内容",
         value=oral_default_text,
-        height=220,
-        placeholder="Paste your English dental or medical course text here...",
+        height=200,
+        placeholder="粘贴课程内容（英文）或课堂提要...",
+        key="oral_course_text",
     )
 
-    control_col_1, control_col_2 = st.columns(2)
+    st.markdown("### 配置")
+    control_col_1, control_col_2, control_col_3 = st.columns(3)
     with control_col_1:
         oral_subject = st.selectbox(
-            "Subject",
+            "科目",
             ["Dentistry", "Anatomy", "Pathology", "Pharmacology", "Endodontics", "Periodontology", "Oral Surgery"],
+            index=0,
         )
     with control_col_2:
-        oral_difficulty = st.selectbox("Difficulty", ["easy", "medium", "hard"], index=1)
+        oral_difficulty = st.selectbox("难度", ["easy", "medium", "hard"], index=1)
+    with control_col_3:
+        default_count = 5 if selected_mode == "考前模拟" else 1
+        oral_question_count = st.number_input(
+            "题目数量",
+            min_value=1,
+            max_value=10,
+            value=default_count,
+            step=1,
+        )
 
-    if st.button("Generate Written Question", type="primary", use_container_width=True):
+    exam_topic = st.text_input(
+        "主题",
+        value=st.session_state.get("oral_exam_topic", ""),
+        placeholder="例如：Dental caries",
+        key="oral_exam_topic",
+    )
+    if selected_mode == "错题强化":
+        inferred_topic = _ensure_written_topic_from_input(exam_topic, oral_subject, wrong_topics)
+        if inferred_topic and inferred_topic != exam_topic:
+            st.caption(f"错题强化：已为你自动选择最近错题主题「{inferred_topic}」")
+            exam_topic = inferred_topic
+            st.session_state["oral_exam_topic"] = exam_topic
+
+    st.session_state["oral_mode"] = selected_mode
+    st.session_state["oral_question_type"] = selected_type
+    st.session_state["oral_exam_rounds_target"] = int(oral_question_count) if selected_mode == "考前模拟" else 1
+
+    if selected_mode == "错题强化" and not wrong_topics:
+        st.info("你还没有错题记录，请先完成日常练习或考前模拟。")
+
+    if st.button("生成笔试题", type="primary", use_container_width=True):
         if not oral_course_text.strip():
-            st.error("请先粘贴英文课程内容。")
+            st.error("请先填写课程内容。")
+        elif selected_mode == "错题强化" and not wrong_topics:
+            st.info("你还没有错题记录，请先完成日常练习或考前模拟。")
         else:
             try:
-                with st.spinner("正在生成笔试题..."):
-                    st.session_state["oral_question_data"] = generate_oral_question(
-                        oral_course_text,
-                        oral_subject,
-                        oral_difficulty,
+                with st.spinner("正在生成题目..."):
+                    prepared = _prepare_written_question(
+                        exam_topic=exam_topic.strip() or _ensure_written_topic_from_input("", oral_subject, wrong_topics),
+                        subject=oral_subject,
+                        course_context=oral_course_text,
+                        difficulty=oral_difficulty,
+                        question_type=selected_type,
+                        mode=selected_mode,
+                        question_seed=int(time.time()),
                     )
+                    prepared["question_type"] = selected_type
+                    prepared["topic"] = prepared.get("topic") or exam_topic.strip() or oral_subject
+                    prepared["difficulty"] = prepared.get("difficulty") or oral_difficulty
+                    st.session_state["oral_question_data"] = prepared
                     st.session_state["oral_exam_result"] = None
                     st.session_state["reset_oral_student_answer"] = True
-                    st.session_state["oral_exam_rounds"] = []
+                    if selected_mode == "考前模拟":
+                        st.session_state["oral_exam_rounds"] = []
+                    else:
+                        st.session_state["oral_exam_rounds"] = st.session_state.get("oral_exam_rounds", [])[:0]
+                    st.session_state["oral_rounds_completed"] = 0
                     st.session_state["last_course_text"] = oral_course_text
-                st.success("笔试题已生成。")
-            except OralExamConfigError as exc:
-                st.error(str(exc))
-            except OralExamJSONError as exc:
-                st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
-                st.code(exc.raw_output)
+                st.success("已生成题目。")
             except Exception as exc:
-                st.error(f"生成笔试题失败：{exc}")
+                st.error(f"生成题目失败：{exc}")
 
     question_data = st.session_state.get("oral_question_data")
     if question_data:
-        st.markdown("### Written Exam Question")
-        question_text = question_data.get("question", "")
-        st.info(question_text)
+        question_source = question_data.get("question_source") or question_data.get("source") or question_data.get("bank_source", "")
+        source_text = "学校题库" if question_source in ("school_question_bank", "school_question_bank") else "语言模型生成"
+        st.markdown("### 题目")
+        st.info(question_data.get("question", ""))
+        if question_data.get("options"):
+            for option in question_data.get("options", []):
+                st.markdown(f"- {option}")
+        with st.expander("题目信息与评分要点"):
+            st.markdown(f"**题库来源：** {source_text}")
+            st.markdown(f"**题型：** {question_data.get('question_type', selected_type)}")
+            st.markdown(f"**难度：** {question_data.get('difficulty', oral_difficulty)}")
+            st.markdown(f"**主题：** {question_data.get('matched_topic') or question_data.get('topic', exam_topic)}")
+            if question_data.get("focus") or question_data.get("question_focus"):
+                st.markdown(f"**Focus：** {question_data.get('focus') or question_data.get('question_focus')}")
+            st.markdown(f"**匹配分数：** {question_data.get('match_score', 0)}")
+            st.markdown(f"**匹配原因：** {question_data.get('match_reason', '')}")
+            can_show_hints = selected_mode != "考前模拟" or bool(st.session_state.get("oral_exam_result"))
+            if selected_mode == "考前模拟" and not can_show_hints:
+                st.caption("考前模拟模式下，作答前不显示提示和评分细则。提交后可以查看解析。")
+            if can_show_hints and question_data.get("expected_points"):
+                st.markdown("**Must-know 要点：**")
+                for item in question_data.get("expected_points", []):
+                    st.markdown(f"- {item}")
+            if can_show_hints and question_data.get("common_mistakes"):
+                st.markdown("**常见扣分点：**")
+                for item in question_data.get("common_mistakes", []):
+                    st.markdown(f"- {item}")
+            if can_show_hints and question_data.get("must_mention_terms"):
+                st.markdown("**提示词：**")
+                for item in question_data.get("must_mention_terms", [])[:5]:
+                    st.markdown(f"- {item}")
+            if can_show_hints and question_data.get("follow_up_questions"):
+                st.markdown("**可考察追问方向：**")
+                for item in question_data.get("follow_up_questions", [])[:4]:
+                    st.markdown(f"- {item}")
+            if can_show_hints and question_data.get("scoring_rubric"):
+                st.markdown("**评分 Rubric：**")
+                st.json(question_data.get("scoring_rubric"))
 
-        with st.expander("查看 expected points / must-mention terms / model answer"):
-            st.markdown("**Expected Points**")
-            for item in question_data.get("expected_points", []):
-                st.markdown(f"- {item}")
-            st.markdown("**Must Mention Terms**")
-            for item in question_data.get("must_mention_terms", []):
-                st.markdown(f"- {item}")
-            st.markdown("**Model Answer**")
-            st.write(question_data.get("model_answer", ""))
+        with st.expander("调试：笔试题库匹配"):
+            st.write(
+                {
+                    "matched_topic": question_data.get("matched_topic") or question_data.get("topic"),
+                    "match_score": question_data.get("match_score", 0),
+                    "inferred_focus": question_data.get("focus") or question_data.get("question_focus"),
+                    "question_source": question_source,
+                    "generated_question": question_data.get("question"),
+                }
+            )
 
         if st.session_state.get("reset_oral_student_answer"):
             st.session_state["oral_student_answer"] = ""
             st.session_state["reset_oral_student_answer"] = False
+
         student_answer = st.text_area(
-            "Your English Answer",
+            "我的答案",
             height=180,
             placeholder="Type your written exam answer in English...",
             key="oral_student_answer",
         )
 
-        if st.button("Submit & Grade", type="primary", use_container_width=True):
+        if st.button("提交答案", type="primary", use_container_width=True):
             if not student_answer.strip():
-                st.error("请先输入你的英文回答。")
+                st.error("请先输入你的答案。")
             else:
                 try:
-                    with st.spinner("正在批改你的笔试回答..."):
-                        result = grade_oral_answer(question_data, student_answer, oral_subject)
+                    with st.spinner("正在评卷..."):
+                        result = grade_written_answer(
+                            {
+                                "question_type": question_data.get("question_type", selected_type),
+                                "question": question_data.get("question", ""),
+                                "options": question_data.get("options", []),
+                                "correct_answer": question_data.get("correct_answer", ""),
+                                "student_answer": student_answer,
+                                "expected_points": question_data.get("expected_points", []),
+                                "model_answer": question_data.get("model_answer", ""),
+                                "scoring_rubric": question_data.get("scoring_rubric", {}),
+                                "common_mistakes": question_data.get("common_mistakes", []),
+                                "mode": selected_mode,
+                                "topic": question_data.get("matched_topic") or question_data.get("topic", exam_topic),
+                            }
+                        )
                     st.session_state["oral_exam_result"] = result
                     attempt = {
+                        "session_id": st.session_state.get("oral_session_id"),
                         "subject": oral_subject,
                         "difficulty": question_data.get("difficulty", oral_difficulty),
-                        "topic": question_data.get("topic", ""),
+                        "topic": question_data.get("topic", exam_topic),
                         "course_context": oral_course_text,
                         "question": question_data.get("question", ""),
-                        "expected_points": question_data.get("expected_points", []),
-                        "model_answer": question_data.get("model_answer", ""),
                         "answer": student_answer,
                         "result": result,
                         "grading_result": result,
+                        "expected_points": question_data.get("expected_points", []),
+                        "model_answer": question_data.get("model_answer", ""),
+                        "options": question_data.get("options", []),
+                        "correct_answer": question_data.get("correct_answer", ""),
+                        "question_type": selected_type,
+                        "question_source": question_source,
                     }
                     try:
                         save_written_exam_attempt(attempt)
@@ -1723,54 +1985,60 @@ def render_oral_exam_mode(default_text: str):
                     except Exception as exc:
                         st.warning("笔试记录保存失败，请稍后重试。")
                         if st.secrets.get("STAGE", "").lower() == "dev" or os.getenv("DENTPILOT_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
-                            with st.expander("调试：保存失败详情"):
+                            with st.expander("调试信息"):
                                 st.caption(f"{type(exc).__name__}: {exc}")
+
                     st.session_state["oral_exam_history"].insert(0, attempt)
                     st.session_state["oral_exam_history"] = st.session_state["oral_exam_history"][:10]
                     st.session_state["oral_exam_rounds"].append(attempt)
+                    st.session_state["oral_rounds_completed"] = len(st.session_state["oral_exam_rounds"])
                 except OralExamConfigError as exc:
                     st.error(str(exc))
                 except OralExamJSONError as exc:
-                    st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+                    st.error("DeepSeek 返回异常，请检查输出格式。")
                     st.code(exc.raw_output)
                 except Exception as exc:
-                    st.error(f"批改失败：{exc}")
+                    st.error(f"评分失败：{exc}")
 
     if st.session_state.get("oral_exam_result"):
+        st.markdown("### 口试解析")
         render_oral_grade_result(st.session_state["oral_exam_result"])
-        follow_up = st.session_state["oral_exam_result"].get("follow_up_question", "")
-        if follow_up and st.button("Continue With Follow-up Question", use_container_width=True):
-            st.session_state["oral_question_data"] = {
-                "question": follow_up,
-                "expected_points": [],
-                "must_mention_terms": [],
-                "difficulty": oral_difficulty,
-                "topic": st.session_state.get("oral_question_data", {}).get("topic", oral_subject),
-                "model_answer": "",
-            }
-            st.session_state["oral_exam_result"] = None
-            st.session_state["reset_oral_student_answer"] = True
-            st.rerun()
+
+        completed = len(st.session_state.get("oral_exam_rounds", []))
+        target = st.session_state.get("oral_exam_rounds_target", 1)
+        if completed < target:
+            if st.button("再练一道类似题", use_container_width=True):
+                st.session_state["oral_exam_result"] = None
+                st.session_state["oral_question_data"] = None
+                st.session_state["reset_oral_student_answer"] = True
+                st.rerun()
+        elif selected_mode == "考前模拟":
+            st.success(f"本轮已完成 {completed} 题，可切换主题或题型继续下一轮。")
+
+    if selected_mode == "考前模拟":
+        st.markdown("### 考前模拟进度")
+        st.progress(min(len(st.session_state.get("oral_exam_rounds", [])), st.session_state.get("oral_exam_rounds_target", 1)) / max(1, st.session_state.get("oral_exam_rounds_target", 1)))
+        st.caption(f"已做：{len(st.session_state.get('oral_exam_rounds', []))} / {st.session_state.get('oral_exam_rounds_target', 1)}")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     rounds = st.session_state.get("oral_exam_rounds", [])
     if rounds:
-        st.markdown("### Current Written Exam Session")
-        st.caption(f"{len(rounds)} round(s) completed in this written exam session.")
+        st.markdown("### 当前口试 Session")
+        st.caption(f"本次已完成 {len(rounds)} 题。")
         for index, attempt in enumerate(rounds, start=1):
             result = attempt.get("grading_result") or attempt.get("result", {})
-            with st.expander(f"Round {index}: {result.get('score', 0)}/100 ({result.get('level', '')})"):
-                st.markdown(f"**Question:** {attempt.get('question', '')}")
-                st.markdown(f"**Answer:** {attempt.get('answer', '')}")
-                st.markdown(f"**Feedback:** {result.get('chinese_feedback', '')}")
+            with st.expander(f"题 {index}: {result.get('score', 0)}/100 ({result.get('level', '')})"):
+                st.markdown(f"**题目：** {attempt.get('question', '')}")
+                st.markdown(f"**我的答案：** {attempt.get('answer', '')}")
+                st.markdown(f"**反馈：** {result.get('chinese_feedback', '')}")
 
-    st.markdown("### 最近笔试记录")
+    st.markdown("### 历史笔试记录")
     if st.session_state.get("oral_exam_history_error"):
         st.error(f"读取笔试记录失败：{st.session_state['oral_exam_history_error']}")
     history = st.session_state.get("oral_exam_history", [])
     if not history:
-        st.info("还没有笔试记录。生成问题并提交回答后，会在这里保存最近记录。")
+        st.info("还没有笔试记录。请先生成题目并提交。")
     else:
         for index, attempt in enumerate(history[:5], start=1):
             result = attempt.get("result", {})
@@ -1778,53 +2046,88 @@ def render_oral_exam_mode(default_text: str):
             level = result.get("level", "")
             label = f"{index}. {attempt.get('topic') or attempt.get('subject')} - {score}/100 ({level})"
             with st.expander(label):
-                st.markdown(f"**Question:** {attempt.get('question', '')}")
-                st.markdown(f"**Your Answer:** {attempt.get('answer') or attempt.get('student_answer', '')}")
-                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback') or attempt.get('feedback', '')}")
+                st.markdown(f"**题目：** {attempt.get('question', '')}")
+                st.markdown(f"**我的答案：** {attempt.get('answer') or attempt.get('student_answer', '')}")
+                st.markdown(f"**反馈：** {result.get('chinese_feedback') or attempt.get('feedback', '')}")
+
+    wrong_records = []
+    for attempt in history:
+        result = attempt.get("result") or attempt.get("grading_result") or attempt
+        score = safe_float(result.get("score"), None)
+        missing_points = result.get("missing_points") or attempt.get("missing_points") or []
+        is_wrong = (score is not None and score < 70) or bool(missing_points)
+        if is_wrong:
+            wrong_records.append(attempt)
+
+    st.markdown("### 错题本")
+    if not wrong_records:
+        st.info("暂时没有错题记录。完成日常练习或考前模拟后，低分题和缺失要点会出现在这里。")
+    else:
+        for index, attempt in enumerate(wrong_records[:8], start=1):
+            result = attempt.get("result") or attempt.get("grading_result") or attempt
+            score = safe_float(result.get("score"), 0)
+            topic_label = attempt.get("topic") or attempt.get("subject") or "Written Exam"
+            with st.expander(f"{index}. {topic_label} - {score}/100"):
+                st.markdown(f"**题目：** {attempt.get('question', '')}")
+                st.markdown(f"**我的答案：** {attempt.get('answer') or attempt.get('student_answer', '')}")
+                model_answer = attempt.get("model_answer") or result.get("corrected_answer") or ""
+                if model_answer:
+                    st.markdown(f"**参考答案：** {model_answer}")
+                missing_points = result.get("missing_points") or attempt.get("missing_points") or []
+                if missing_points:
+                    st.markdown("**缺失要点：**")
+                    for point in missing_points[:5]:
+                        st.markdown(f"- {point}")
+                if st.button("再练一道类似题", key=f"retry_written_{index}_{attempt.get('id', '')}"):
+                    st.session_state["oral_exam_topic"] = topic_label
+                    st.session_state["oral_mode"] = "错题强化"
+                    st.session_state["oral_question_data"] = None
+                    st.session_state["oral_exam_result"] = None
+                    st.session_state["reset_oral_student_answer"] = True
+                    st.rerun()
 
     st.markdown(
         """
         <div class="footer">
-            DentPilot AI Written Exam 是纯文本笔试训练模式，用于帮助学生准备英文医学/牙科考试。实时语音请使用 Realtime Oral Exam。
+            本模块支持中文界面，按“笔试模式/题型”控制题目来源和难度。Study Pack、临床病例与实时口试功能可持续使用。
         </div>
         """,
         unsafe_allow_html=True,
     )
-
 def render_clinical_case_grade(result: dict):
     st.markdown("### 病例评分")
     score_col, level_col = st.columns(2)
-    score_col.metric("总分", f"{result.get('score', 0)}/100")
+    score_col.metric("得分", f"{result.get('score', 0)}/100")
     level_col.metric("等级", result.get("level", ""))
 
     rubric_rows = [
-        {"评分项": "Diagnosis", "得分": result.get("diagnosis_score", 0), "满分": 20},
-        {"评分项": "Evidence", "得分": result.get("evidence_score", 0), "满分": 20},
-        {"评分项": "Differential diagnosis", "得分": result.get("differential_score", 0), "满分": 15},
-        {"评分项": "Additional tests", "得分": result.get("tests_score", 0), "满分": 15},
-        {"评分项": "Treatment plan", "得分": result.get("treatment_score", 0), "满分": 15},
-        {"评分项": "Patient communication", "得分": result.get("patient_communication_score", 0), "满分": 10},
-        {"评分项": "Safety and red flags", "得分": result.get("safety_score", 0), "满分": 5},
+        {"维度": "诊断", "得分": result.get("diagnosis_score", 0), "权重": 20},
+        {"维度": "依据与证据", "得分": result.get("evidence_score", 0), "权重": 20},
+        {"维度": "鉴别诊断", "得分": result.get("differential_score", 0), "权重": 15},
+        {"维度": "额外检查", "得分": result.get("tests_score", 0), "权重": 15},
+        {"维度": "治疗计划", "得分": result.get("treatment_score", 0), "权重": 15},
+        {"维度": "医患沟通", "得分": result.get("patient_communication_score", 0), "权重": 10},
+        {"维度": "安全与红旗", "得分": result.get("safety_score", 0), "权重": 5},
     ]
     st.dataframe(pd.DataFrame(rubric_rows), use_container_width=True, hide_index=True)
 
     col_1, col_2 = st.columns(2)
     with col_1:
-        st.subheader("做得好的地方")
+        st.subheader("做得好的点")
         strengths = result.get("strengths") or []
         if strengths:
             for item in strengths:
                 st.markdown(f"- {item}")
         else:
-            st.write("暂无。")
+            st.write("未识别到明显优点")
     with col_2:
-        st.subheader("需要补充")
+        st.subheader("待改进")
         missing_points = result.get("missing_points") or []
         if missing_points:
             for item in missing_points:
                 st.markdown(f"- {item}")
         else:
-            st.write("暂无。")
+            st.write("未识别到明显缺失点")
 
     st.subheader("Model Answer")
     st.write(result.get("model_answer", ""))
@@ -1832,7 +2135,7 @@ def render_clinical_case_grade(result: dict):
     st.subheader("中文反馈")
     st.write(result.get("chinese_feedback", ""))
 
-    st.subheader("下一步练习建议")
+    st.subheader("下一步建议")
     st.info(result.get("next_practice_suggestion", ""))
 
 
@@ -1845,7 +2148,7 @@ def render_clinical_case_mode(default_text: str):
             <div class="eyebrow">AI 临床病例训练</div>
             <h1 class="hero-title">Clinical Case Training</h1>
             <p class="hero-subtitle">根据课程内容生成牙科/医学临床病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。</p>
-            <p class="hero-copy">完成口试或病例训练后，系统会自动分析你的薄弱知识点，并生成个性化复习计划。</p>
+            <p class="hero-copy">完成病例训练后，系统会保存记录并用于后续弱点分析。</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -1884,10 +2187,10 @@ def render_clinical_case_mode(default_text: str):
 
     if st.button("Generate Clinical Case", type="primary", use_container_width=True):
         if not case_course_text.strip():
-            st.error("请先粘贴英文课程内容。")
+            st.error("请先粘贴课件内容。")
         else:
             try:
-                with st.spinner("正在生成临床病例..."):
+                with st.spinner("正在生成病例题..."):
                     st.session_state["clinical_case_data"] = generate_clinical_case(
                         case_course_text,
                         case_subject,
@@ -1895,14 +2198,14 @@ def render_clinical_case_mode(default_text: str):
                     )
                     st.session_state["clinical_case_result"] = None
                     st.session_state["last_course_text"] = case_course_text
-                st.success("临床病例已生成。")
+                st.success("病例已生成。")
             except ClinicalCaseConfigError as exc:
                 st.error(str(exc))
             except ClinicalCaseJSONError as exc:
-                st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
+                st.error("DeepSeek 返回了不可解析的 JSON，请检查输出格式。")
                 st.code(exc.raw_output)
             except Exception as exc:
-                st.error(f"生成临床病例失败：{exc}")
+                st.error(f"生成病例失败：{exc}")
 
     case_data = st.session_state.get("clinical_case_data")
     if case_data:
@@ -1927,7 +2230,7 @@ def render_clinical_case_mode(default_text: str):
         for index, question in enumerate(case_data.get("questions", []), start=1):
             st.markdown(f"{index}. {question}")
 
-        with st.expander("查看 expected diagnosis / expected points / red flags"):
+        with st.expander("鏌ョ湅 expected diagnosis / expected points / red flags"):
             st.markdown("**Expected Diagnosis**")
             st.write(case_data.get("expected_diagnosis", ""))
             st.markdown("**Expected Points**")
@@ -1949,7 +2252,7 @@ def render_clinical_case_mode(default_text: str):
 
         if st.button("Submit Case Answer", type="primary", use_container_width=True):
             if not student_answer.strip():
-                st.error("请先输入你的英文病例分析。")
+                st.error("请先输入你的病例分析答案。")
             else:
                 try:
                     with st.spinner("正在批改病例分析..."):
@@ -1982,19 +2285,19 @@ def render_clinical_case_mode(default_text: str):
                     st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
                     st.code(exc.raw_output)
                 except Exception as exc:
-                    st.error(f"批改失败：{exc}")
+                    st.error(f"评改失败：{exc}")
 
     if st.session_state.get("clinical_case_result"):
         render_clinical_case_grade(st.session_state["clinical_case_result"])
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("### 最近病例训练记录")
+    st.markdown("### 病例历史")
     if st.session_state.get("clinical_case_history_error"):
         st.error(f"读取病例记录失败：{st.session_state['clinical_case_history_error']}")
     history = st.session_state.get("clinical_case_history", [])
     if not history:
-        st.info("还没有病例训练记录。生成病例并提交回答后，会在这里保存最近记录。")
+        st.info("暂无历史病例记录，完成一次分析后会记录在这里。")
     else:
         for index, attempt in enumerate(history[:5], start=1):
             result = attempt.get("result", {})
@@ -2028,8 +2331,8 @@ def render_weakness_analysis_mode():
         <section class="hero">
             <div class="eyebrow">AI 弱点分析</div>
             <h1 class="hero-title">Weakness Analysis</h1>
-            <p class="hero-subtitle">根据口试和临床病例训练记录，找出强项、弱点、可能原因，并生成 3 天复习计划。</p>
-            <p class="hero-copy">完成口试或病例训练后，系统会自动分析你的薄弱知识点，并生成个性化复习计划。</p>
+            <p class="hero-subtitle">根据笔试、口试和临床病例训练记录，找出强项、弱点和可能原因，并生成 3 天复习计划。</p>
+            <p class="hero-copy">完成训练后，系统会分析你的薄弱知识点，并生成个性化复习计划。</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -2045,7 +2348,7 @@ def render_weakness_analysis_mode():
     metric_col_4.metric("Study Packs", len(study_pack_records))
 
     if not combined_exam_history and not clinical_history:
-        st.info("请先完成至少一次笔试、病例或口试训练，系统会根据记录分析弱点。")
+        st.info("请先完成至少 1 次口试或笔试后再分析。")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -2064,14 +2367,14 @@ def render_weakness_analysis_mode():
                         result_data.get("missing_points") or [],
                         result_data.get("score"),
                     )
-            st.success("弱点分析已生成。")
+            st.success("弱项分析已完成。")
         except WeaknessAnalysisConfigError as exc:
             st.error(str(exc))
         except WeaknessAnalysisJSONError as exc:
             st.error("DeepSeek 返回了无效 JSON。下面是原始输出，方便调试：")
             st.code(exc.raw_output)
         except Exception as exc:
-            st.error(f"弱点分析失败：{exc}")
+            st.error(f"弱项分析失败：{exc}")
 
     result = st.session_state.get("weakness_analysis_result")
     if result:
@@ -2097,7 +2400,7 @@ def render_weakness_analysis_mode():
         if topic_breakdown:
             st.dataframe(pd.DataFrame(topic_breakdown), use_container_width=True, hide_index=True)
         else:
-            st.info("暂无 topic breakdown。")
+            st.info("暂无 Topic Breakdown。")
 
         st.subheader("Three-Day Study Plan")
         for day_plan in result.get("three_day_plan", []):
@@ -2118,7 +2421,7 @@ def render_weakness_analysis_mode():
     st.markdown(
         """
         <div class="footer">
-            Weakness Analysis 会根据当前会话练习记录生成学习建议；刷新或重新开启会话后，临时记录可能会清空。
+            Weakness Analysis 会根据当前用户的练习记录生成学习建议；刷新后仍会优先读取 Supabase 中的历史记录。
         </div>
         """,
         unsafe_allow_html=True,
@@ -2128,8 +2431,8 @@ def render_weakness_analysis_mode():
 with st.sidebar:
     render_sidebar_account()
     render_admin_dashboard()
-    st.markdown("## 🦷 DentPilot AI")
-    st.caption("面向中国留学生的英授牙科学习助手")
+    st.markdown("## DentPilot AI")
+    st.caption("面向中国留学生的英授牙科/医学学习助手")
     st.markdown("---")
 
     mode_options = ["Study Pack", "AI Written Exam", "Clinical Case", "Weakness Analysis", "Realtime Oral Exam"]
@@ -2140,32 +2443,32 @@ with st.sidebar:
         mode_options,
         index=mode_options.index(selected_mode_label) if selected_mode_label in mode_options else 0,
         format_func={
-            "Study Pack": "Study Pack / 复习包",
+            "Study Pack": "Study Pack / 学习包",
             "AI Written Exam": "AI Written Exam / 笔试训练",
             "Clinical Case": "Clinical Case / 临床病例",
-            "Weakness Analysis": "Weakness Analysis / 弱点分析",
-            "Realtime Oral Exam": "🎙️ Realtime Oral Exam / 实时口试",
+            "Weakness Analysis": "Weakness Analysis / 弱项分析",
+            "Realtime Oral Exam": "Realtime Oral Exam / 实时口试",
         }.get,
     )
     save_selected_mode(MODE_LABEL_TO_KEY.get(mode, "study_pack"))
 
     mode_descriptions = {
-        "Study Pack": "上传英文课件或 PDF，生成中文讲解、术语、Quiz、Anki 和 PDF 复习包。",
-        "AI Written Exam": "用英文答题，练习考点覆盖、表达结构和书面考试思路。",
-        "Clinical Case": "通过临床病例训练诊断、证据、检查、治疗计划和患者沟通。",
-        "Weakness Analysis": "根据练习记录分析薄弱点，并生成 3 天复习计划。",
-        "Realtime Oral Exam": "和 AI 牙科教授实时口试，练习英文回答、追问和考官反馈。",
+        "Study Pack": "上传课程材料，自动生成复习包、Quiz 和 Anki 卡片。",
+        "AI Written Exam": "按模式/题型生成学校风格写作题，并给出详细评分与错题反馈。",
+        "Clinical Case": "基于案例的口腔临床诊断与治疗问答训练。",
+        "Weakness Analysis": "基于历史记录分析薄弱环节，给出短期训练建议。",
+        "Realtime Oral Exam": "实时口语练习与对话反馈（独立应用会话入口）。",
     }
 
     st.markdown("### 当前模式")
-    st.write(mode_descriptions.get(mode, "DentPilot AI 学习训练模式。"))
+    st.write(mode_descriptions.get(mode, "DentPilot AI 功能模块"))
 
     if mode != "Realtime Oral Exam":
         st.markdown("---")
         if os.getenv("DEEPSEEK_API_KEY"):
-            st.caption("AI 服务已连接")
+            st.caption("AI 服务配置：已启用")
         else:
-            st.caption("AI 服务未配置 · 将使用本地备用模式")
+            st.caption("AI 服务未配置：请在环境变量中设置 DeepSeek API Key。")
 
 
     st.markdown("---")
@@ -2210,7 +2513,7 @@ if mode == "Realtime Oral Exam":
 st.markdown(
     """
     <section class="hero">
-        <div class="eyebrow">英授牙科课程学习助手</div>
+        <div class="eyebrow">英授牙科/医学课程学习助手</div>
         <h1 class="hero-title">DentPilot AI</h1>
         <p class="hero-subtitle">AI Study Assistant for English-Taught Dental Students</p>
         <p class="hero-copy">为中国留学生设计：把英文 lecture、PDF、PPT 和教材段落整理成可复习的中文讲解、牙科术语、自测题、Anki 卡片和 PDF 复习包。</p>
@@ -2238,22 +2541,22 @@ st.markdown(
     """
     <div class="feature-grid">
         <div class="feature-card">
-            <div class="feature-icon">✦</div>
+            <div class="feature-icon">01</div>
             <div class="feature-title">中文讲解</div>
-            <div class="feature-copy">把密集的英文牙科内容转成适合中国学生理解的中文复习笔记。</div>
+            <div class="feature-copy">把密集的英文牙科/医学内容转成适合中国学生理解的中文复习笔记。</div>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">⌁</div>
+            <div class="feature-icon">02</div>
             <div class="feature-title">牙科术语表</div>
             <div class="feature-copy">匹配课程关键词，建立中英文术语和定义之间的联系。</div>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">?</div>
+            <div class="feature-icon">03</div>
             <div class="feature-title">Quiz 自测</div>
             <div class="feature-copy">检查定义、机制链、临床意义和高频考点是否真正掌握。</div>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">↓</div>
+            <div class="feature-icon">04</div>
             <div class="feature-title">复习资料导出</div>
             <div class="feature-copy">导出 Anki CSV 和 PDF 复习包，方便考前整理和间隔复习。</div>
         </div>
@@ -2266,7 +2569,7 @@ st.markdown(
 st.markdown('<div class="input-panel">', unsafe_allow_html=True)
 st.markdown('<div class="section-label">生成复习包</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-copy">上传 PDF / Word（.docx）/ TXT，或粘贴英文牙科 lecture、教材段落、PPT 文本。</div>',
+    '<div class="section-copy">上传 PDF / Word(docx) / TXT，或粘贴课程讲义、教材章节、PPT 文本。</div>',
     unsafe_allow_html=True,
 )
 
@@ -2289,7 +2592,7 @@ st.markdown(
 uploaded_course_file = st.file_uploader(
     "上传 PDF / Word / TXT 课程资料",
     type=["pdf", "docx", "txt"],
-    help="支持英文 lecture PDF、Word（.docx）、TXT、教材节选或课件讲义。可选中文本 PDF、.docx 和 .txt 的提取效果最好。",
+    help="支持英文 lecture PDF、Word(docx)、TXT、教材节选或课程讲义。可选中文本 PDF、docx 和 txt 的提取效果最好。",
 )
 
 uploaded_text = ""
@@ -2310,7 +2613,7 @@ if uploaded_course_file is not None:
             source_label = f"TXT 文件的 {line_count} 行"
         else:
             source_label = "课程文档"
-            st.warning("暂时只支持 PDF、Word（.docx）和 TXT 文件。")
+            st.warning("暂时只支持 PDF、Word(docx) 和 TXT 文件。")
         if uploaded_text.strip():
             st.success(f"已从 {source_label} 中提取文本。生成前你仍然可以编辑。")
         elif file_suffix == ".pdf":
@@ -2403,7 +2706,7 @@ else:
 
 if generate:
     if not text.strip():
-        st.error("请先粘贴英文课程内容，或上传 PDF / Word（.docx）/ TXT 文档。")
+        st.error("请先粘贴英文课程内容，或上传 PDF / Word(docx) / TXT 文档。")
         st.stop()
 
     with st.spinner("正在按题号/章节生成复习包，大文件可能需要几分钟..."):
@@ -2486,7 +2789,7 @@ if generate:
             st.warning("部分章节未生成，请使用详细逐题版或减少上传内容。")
         if coverage.get("expected_mismatch"):
             st.error(
-                f"你填写的预期题目数是 {coverage.get('expected_sections')}，"
+                f"你填写的预期题目数量是 {coverage.get('expected_sections')}，"
                 f"但系统只检测到 {detected_sections} 个。请检查原文提取结果，或把文件另存为 DOCX/TXT 后重试。"
             )
 
@@ -2579,8 +2882,8 @@ if generate:
                 st.markdown(f"**Q{i}. {q.get('question', '')}**")
                 for option in q.get("options", []):
                     st.write(f"- {option}")
-                with st.expander("查看答案与中文解析"):
-                    st.write(f"答案：{q.get('answer', '')}")
+                    with st.expander("查看答案与中文解析"):
+                        st.write(f"答案：{q.get('answer', '')}")
                     st.write(q.get("explanation_zh", ""))
 
     with tab_anki:
@@ -2612,7 +2915,7 @@ if generate:
             st.metric("预期题目数量", coverage.get("expected_sections"))
         if coverage.get("expected_mismatch"):
             st.error(
-                "检测数量和预期题目数量不一致。建议先查看下方“检测到的题目 / 章节”，"
+                "检测数量和预期题目数量不一致。建议先查看下方“检测到的题目/章节”，"
                 "确认缺的是哪些题；如果 PDF 提取不完整，请改用 DOCX 或 TXT。"
             )
         if coverage.get("missing_sections"):
@@ -2621,7 +2924,7 @@ if generate:
             st.success("没有检测到遗漏。")
         detected_titles = coverage.get("detected_titles", [])
         if detected_titles:
-            st.write("检测到的题目 / 章节：")
+            st.write("检测到的题目/章节：")
             st.dataframe(pd.DataFrame(detected_titles), use_container_width=True)
         st.write(f"检测方式：{coverage.get('detection_method', 'legacy')}")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -2664,7 +2967,7 @@ else:
 st.markdown(
     """
     <div class="footer">
-        DentPilot AI 帮助英授牙科留学生把英文课程资料整理成中文讲解、术语复习、Quiz 自测、Anki 卡片和 PDF 复习包。
+        DentPilot AI 帮助英授牙科/医学学生把英文课程资料整理成中文讲解、术语复习、Quiz 自测、Anki 卡片和 PDF 复习包。
     </div>
     """,
     unsafe_allow_html=True,
