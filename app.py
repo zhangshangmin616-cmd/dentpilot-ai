@@ -3,13 +3,12 @@ import io
 import json
 import os
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
-import extra_streamlit_components as stx
 import pandas as pd
 import requests
 import streamlit as st
+from streamlit_js_eval import streamlit_js_eval
 from docx import Document
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -48,13 +47,15 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 SUPABASE_AUTH_URL = "https://nakkcdzpxdggirujgmtk.supabase.co/auth/v1"
 DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_mBC1RRvQRbZmNfofqDap2w_z0DjtKrE"
-AUTH_COOKIE_NAME = "dentpilot_supabase_session"
-AUTH_COOKIE_DAYS = 14
+LOCAL_STORAGE_AUTH_KEY = "DENTPILOT_AUTH_SESSION"
+LOCAL_STORAGE_EMPTY = "__DENTPILOT_AUTH_EMPTY__"
 AUTH_SESSION_KEYS = (
     "dentpilot_user",
     "dentpilot_access_token",
     "dentpilot_refresh_token",
     "dentpilot_expires_at",
+    "auth_user",
+    "auth_session",
 )
 
 
@@ -131,22 +132,18 @@ def render_auth_debug() -> None:
     if not auth_debug_enabled():
         return
     debug = st.session_state.get("auth_debug", {})
+    st.markdown("#### \u767b\u5f55\u72b6\u6001\u8c03\u8bd5")
     st.caption(
         " | ".join(
             [
-                f"cookie exists: {'yes' if debug.get('cookie_exists') else 'no'}",
                 f"session user: {'yes' if debug.get('session_user') else 'no'}",
-                f"restored: {'yes' if debug.get('restored_from_cookie') else 'no'}",
-                f"refresh success: {'yes' if debug.get('refresh_success') else 'no'}",
+                f"localStorage auth: {'yes' if debug.get('local_storage_exists') else 'no'}",
+                f"restore attempted: {'yes' if debug.get('restore_attempted') else 'no'}",
+                f"refresh attempted: {'yes' if debug.get('refresh_attempted') else 'no'}",
+                f"current user: {debug.get('current_user_email') or 'none'}",
             ]
         )
     )
-
-
-def get_cookie_manager():
-    if "cookie_manager" not in st.session_state:
-        st.session_state["cookie_manager"] = stx.CookieManager()
-    return st.session_state["cookie_manager"]
 
 
 def get_auth_headers(access_token: str | None = None) -> dict:
@@ -184,18 +181,35 @@ def apply_auth_payload(payload: dict, restored: bool = False) -> dict | None:
     if not payload.get("access_token") or not payload.get("refresh_token"):
         return None
     user = normalize_supabase_user(payload.get("user"))
-    if not user.get("email") and payload.get("user_email"):
-        user["email"] = payload.get("user_email")
     st.session_state["auth_session"] = payload
     st.session_state["auth_user"] = user
     st.session_state["dentpilot_access_token"] = payload.get("access_token")
     st.session_state["dentpilot_refresh_token"] = payload.get("refresh_token")
     st.session_state["dentpilot_expires_at"] = payload.get("expires_at")
     st.session_state["dentpilot_user"] = user
-    record_auth_debug(session_user=True, restored_from_cookie=restored)
+    record_auth_debug(
+        session_user=True,
+        current_user_email=user.get("email"),
+        restore_attempted=restored,
+    )
     if restored and user.get("email"):
         st.session_state["dentpilot_auth_restored_message"] = f"\u5df2\u81ea\u52a8\u767b\u5f55\uff1a{user['email']}"
     return user
+
+
+def make_local_storage_set_js(payload: dict) -> str:
+    storage_key = json.dumps(LOCAL_STORAGE_AUTH_KEY)
+    storage_value = json.dumps(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return f"localStorage.setItem({storage_key}, {storage_value}); 'saved';"
+
+
+def save_auth_session_to_local_storage(session: dict) -> None:
+    streamlit_js_eval(
+        js_expressions=make_local_storage_set_js(session),
+        key=f"auth_local_storage_save_{int(time.time() * 1000)}",
+    )
+    st.session_state["auth_local_storage_recently_saved"] = True
+    record_auth_debug(local_storage_exists=True)
 
 
 def save_auth_session(data: dict) -> dict | None:
@@ -203,15 +217,46 @@ def save_auth_session(data: dict) -> dict | None:
     user = apply_auth_payload(payload)
     if not user:
         return None
-    cookie_value = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    get_cookie_manager().set(
-        AUTH_COOKIE_NAME,
-        cookie_value,
-        expires_at=datetime.utcnow() + timedelta(days=AUTH_COOKIE_DAYS),
-    )
-    st.session_state["auth_cookie_recently_saved"] = True
-    record_auth_debug(cookie_exists=True, session_user=True)
+    save_auth_session_to_local_storage(payload)
     return user
+
+
+def load_auth_session_from_local_storage() -> dict | None:
+    storage_key = json.dumps(LOCAL_STORAGE_AUTH_KEY)
+    empty_value = json.dumps(LOCAL_STORAGE_EMPTY)
+    raw_value = streamlit_js_eval(
+        js_expressions=f"localStorage.getItem({storage_key}) || {empty_value};",
+        key="auth_local_storage_load",
+    )
+
+    if raw_value is None:
+        st.session_state["auth_local_storage_pending"] = True
+        record_auth_debug(local_storage_exists=False, restore_attempted=False)
+        return None
+
+    st.session_state["auth_local_storage_pending"] = False
+    if raw_value == LOCAL_STORAGE_EMPTY:
+        record_auth_debug(local_storage_exists=False, restore_attempted=True)
+        return None
+
+    try:
+        payload = json.loads(raw_value)
+    except Exception:
+        clear_auth_session_from_local_storage()
+        record_auth_debug(local_storage_exists=True, restore_attempted=True)
+        return None
+
+    record_auth_debug(local_storage_exists=True, restore_attempted=True)
+    return payload
+
+
+def clear_auth_session_from_local_storage() -> None:
+    storage_key = json.dumps(LOCAL_STORAGE_AUTH_KEY)
+    streamlit_js_eval(
+        js_expressions=f"localStorage.removeItem({storage_key}); 'cleared';",
+        key=f"auth_local_storage_clear_{int(time.time() * 1000)}",
+    )
+    record_auth_debug(local_storage_exists=False)
 
 
 def fetch_supabase_user(access_token: str) -> dict | None:
@@ -227,6 +272,7 @@ def fetch_supabase_user(access_token: str) -> dict | None:
 
 
 def refresh_auth_session(refresh_token: str) -> dict | None:
+    record_auth_debug(refresh_attempted=True)
     data = supabase_auth_request(
         "token?grant_type=refresh_token",
         {"refresh_token": refresh_token},
@@ -236,58 +282,7 @@ def refresh_auth_session(refresh_token: str) -> dict | None:
     return user
 
 
-def clear_auth_session() -> None:
-    keys_to_clear = (
-        *AUTH_SESSION_KEYS,
-        "auth_user",
-        "auth_session",
-        "auth_cookie_recently_saved",
-        "auth_cookie_probe_done",
-        "auth_cookie_probe_pending",
-        "dentpilot_auth_restored_message",
-        "dentpilot_session_expired_message",
-    )
-    for key in keys_to_clear:
-        st.session_state.pop(key, None)
-    try:
-        get_cookie_manager().delete(AUTH_COOKIE_NAME)
-    except Exception:
-        pass
-    record_auth_debug(cookie_exists=False, session_user=False, restored_from_cookie=False, refresh_success=False)
-
-
-def parse_auth_cookie(raw_cookie) -> dict | None:
-    if not raw_cookie:
-        return None
-    if isinstance(raw_cookie, dict):
-        return raw_cookie
-    try:
-        return json.loads(raw_cookie)
-    except Exception:
-        return None
-
-
-def load_auth_session() -> dict | None:
-    user = st.session_state.get("auth_user") or st.session_state.get("dentpilot_user")
-    if user:
-        record_auth_debug(session_user=True)
-        return user
-
-    try:
-        raw_cookie = get_cookie_manager().get(AUTH_COOKIE_NAME)
-    except Exception:
-        raw_cookie = None
-
-    payload = parse_auth_cookie(raw_cookie)
-    record_auth_debug(cookie_exists=bool(payload), session_user=False)
-
-    if not payload:
-        if not st.session_state.get("auth_cookie_probe_done"):
-            st.session_state["auth_cookie_probe_done"] = True
-            st.session_state["auth_cookie_probe_pending"] = True
-        return None
-
-    st.session_state["auth_cookie_probe_pending"] = False
+def refresh_supabase_session_if_needed(payload: dict) -> dict | None:
     access_token = payload.get("access_token")
     refresh_token = payload.get("refresh_token")
     expires_at = int(payload.get("expires_at") or 0)
@@ -307,6 +302,37 @@ def load_auth_session() -> dict | None:
             return None
 
     return None
+
+
+def restore_supabase_session_from_tokens(payload: dict | None) -> dict | None:
+    if not payload:
+        return None
+    record_auth_debug(restore_attempted=True)
+    return refresh_supabase_session_if_needed(payload)
+
+
+def clear_auth_session() -> None:
+    keys_to_clear = (
+        *AUTH_SESSION_KEYS,
+        "auth_local_storage_pending",
+        "auth_local_storage_recently_saved",
+        "dentpilot_auth_restored_message",
+        "dentpilot_session_expired_message",
+    )
+    for key in keys_to_clear:
+        st.session_state.pop(key, None)
+    clear_auth_session_from_local_storage()
+    record_auth_debug(session_user=False, current_user_email=None)
+
+
+def load_auth_session() -> dict | None:
+    user = st.session_state.get("auth_user") or st.session_state.get("dentpilot_user")
+    if user:
+        record_auth_debug(session_user=True, current_user_email=user.get("email"))
+        return user
+
+    payload = load_auth_session_from_local_storage()
+    return restore_supabase_session_from_tokens(payload)
 
 
 def get_current_user() -> dict | None:
@@ -329,7 +355,6 @@ def sign_out_supabase() -> None:
 
 
 def render_auth_gate() -> None:
-    get_cookie_manager()
     user = get_current_user()
     if user:
         restored_message = st.session_state.pop("dentpilot_auth_restored_message", None)
@@ -337,8 +362,8 @@ def render_auth_gate() -> None:
             st.success(restored_message)
         return
 
-    if st.session_state.pop("auth_cookie_probe_pending", False):
-        st.info("\u6b63\u5728\u68c0\u67e5\u767b\u5f55\u72b6\u6001...")
+    if st.session_state.pop("auth_local_storage_pending", False):
+        st.info("\u6b63\u5728\u6062\u590d\u767b\u5f55\u72b6\u6001...")
         render_auth_debug()
         if not st.button("\u7ee7\u7eed\u767b\u5f55", use_container_width=True):
             st.stop()
@@ -372,8 +397,7 @@ def render_auth_gate() -> None:
                 user = save_auth_session(data)
                 if not user:
                     raise RuntimeError("Supabase \u672a\u8fd4\u56de\u53ef\u4fdd\u5b58\u7684\u767b\u5f55\u4f1a\u8bdd\u3002")
-                st.success("\u767b\u5f55\u6210\u529f\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u4fdd\u5b58\u3002")
-                st.info("\u5982\u679c\u9875\u9762\u6ca1\u6709\u81ea\u52a8\u8fdb\u5165\u5e94\u7528\uff0c\u8bf7\u624b\u52a8\u5237\u65b0\u4e00\u6b21\u3002")
+                st.success("\u767b\u5f55\u6210\u529f")
                 return
             except Exception as exc:
                 st.error(f"\u767b\u5f55\u5931\u8d25\uff1a{exc}")
@@ -388,7 +412,7 @@ def render_auth_gate() -> None:
                 data = sign_up_with_email(email.strip(), password)
                 user = save_auth_session(data)
                 if user:
-                    st.success("\u6ce8\u518c\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u5e76\u4fdd\u5b58\u767b\u5f55\u72b6\u6001\u3002")
+                    st.success("\u6ce8\u518c\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002")
                     return
                 st.success("\u6ce8\u518c\u6210\u529f\u3002\u5982\u679c Supabase \u5f00\u542f\u90ae\u7bb1\u786e\u8ba4\uff0c\u8bf7\u5148\u67e5\u6536\u90ae\u4ef6\uff0c\u7136\u540e\u518d\u767b\u5f55\u3002")
             except Exception as exc:
