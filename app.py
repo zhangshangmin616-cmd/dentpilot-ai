@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import pandas as pd
+import requests
 import streamlit as st
 from docx import Document
 from dotenv import load_dotenv
@@ -39,6 +40,132 @@ from weakness_analysis import (
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+
+
+SUPABASE_AUTH_URL = "https://nakkcdzpxdggirujgmtk.supabase.co/auth/v1"
+DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_mBC1RRvQRbZmNfofqDap2w_z0DjtKrE"
+
+
+def read_config_value(name: str, default: str = "") -> str:
+    try:
+        secret_value = st.secrets.get(name)
+        if secret_value:
+            return str(secret_value)
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+
+def get_supabase_auth_config() -> tuple[str, str]:
+    url = read_config_value(
+        "NEXT_PUBLIC_SUPABASE_URL",
+        read_config_value("SUPABASE_URL", "https://nakkcdzpxdggirujgmtk.supabase.co"),
+    ).rstrip("/")
+    key = read_config_value(
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+        read_config_value("SUPABASE_ANON_KEY", DEFAULT_SUPABASE_PUBLISHABLE_KEY),
+    )
+    return url, key
+
+
+def supabase_auth_request(endpoint: str, payload: dict) -> dict:
+    supabase_url, publishable_key = get_supabase_auth_config()
+    if not supabase_url or not publishable_key:
+        raise RuntimeError("Supabase 登录尚未配置，请在 Streamlit Secrets 中添加 Publishable key。")
+
+    response = requests.post(
+        f"{supabase_url}/auth/v1/{endpoint}",
+        headers={
+            "apikey": publishable_key,
+            "Authorization": f"Bearer {publishable_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=20,
+    )
+    data = response.json() if response.content else {}
+    if response.status_code >= 400:
+        message = data.get("msg") or data.get("message") or data.get("error_description") or response.text
+        raise RuntimeError(message)
+    return data
+
+
+def sign_in_with_email(email: str, password: str) -> dict:
+    return supabase_auth_request(
+        "token?grant_type=password",
+        {"email": email, "password": password},
+    )
+
+
+def sign_up_with_email(email: str, password: str) -> dict:
+    return supabase_auth_request(
+        "signup",
+        {"email": email, "password": password},
+    )
+
+
+def render_auth_gate() -> None:
+    user = st.session_state.get("dentpilot_user")
+    if user:
+        return
+
+    st.markdown(
+        """
+        <section class="hero auth-hero">
+            <div class="eyebrow">DentPilot AI 账号系统</div>
+            <h1 class="hero-title">登录 DentPilot AI</h1>
+            <p class="hero-copy">请先登录，系统会保存你的学习记录、口试记录和弱点分析。</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    login_tab, register_tab = st.tabs(["登录", "注册"])
+    with login_tab:
+        with st.form("dentpilot_login_form"):
+            email = st.text_input("邮箱", key="login_email")
+            password = st.text_input("密码", type="password", key="login_password")
+            submitted = st.form_submit_button("登录", use_container_width=True)
+        if submitted:
+            try:
+                data = sign_in_with_email(email.strip(), password)
+                st.session_state["dentpilot_access_token"] = data.get("access_token")
+                st.session_state["dentpilot_refresh_token"] = data.get("refresh_token")
+                st.session_state["dentpilot_user"] = data.get("user") or {"email": email.strip()}
+                st.success("登录成功")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"登录失败：{exc}")
+
+    with register_tab:
+        with st.form("dentpilot_register_form"):
+            email = st.text_input("邮箱", key="register_email")
+            password = st.text_input("密码", type="password", key="register_password")
+            submitted = st.form_submit_button("注册", use_container_width=True)
+        if submitted:
+            try:
+                data = sign_up_with_email(email.strip(), password)
+                st.session_state["dentpilot_user"] = data.get("user") or {"email": email.strip()}
+                st.session_state["dentpilot_access_token"] = data.get("access_token")
+                st.session_state["dentpilot_refresh_token"] = data.get("refresh_token")
+                st.success("注册成功。如果 Supabase 开启邮箱确认，请先查收邮件。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"注册失败：{exc}")
+
+    st.stop()
+
+
+def render_sidebar_account() -> None:
+    user = st.session_state.get("dentpilot_user") or {}
+    email = user.get("email") or user.get("user_metadata", {}).get("email") or "当前用户"
+    st.markdown("### 当前用户")
+    st.caption(str(email))
+    if st.button("退出登录", use_container_width=True):
+        for key in ("dentpilot_user", "dentpilot_access_token", "dentpilot_refresh_token"):
+            st.session_state.pop(key, None)
+        st.rerun()
+    st.markdown("---")
 
 
 
@@ -634,6 +761,9 @@ st.markdown(
 )
 
 
+render_auth_gate()
+
+
 sample = (
     "Dental caries is a biofilm-mediated, sugar-driven, multifactorial disease that results "
     "in the demineralization of dental hard tissues. The balance between demineralization "
@@ -1161,6 +1291,7 @@ def render_weakness_analysis_mode():
 
 
 with st.sidebar:
+    render_sidebar_account()
     st.markdown("## 🦷 DentPilot AI")
     st.caption("面向中国留学生的英授牙科学习助手")
     st.markdown("---")

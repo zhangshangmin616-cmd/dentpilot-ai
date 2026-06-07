@@ -27,6 +27,22 @@ http://localhost:8501
 
 ## Environment Variables
 
+For Supabase login:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://nakkcdzpxdggirujgmtk.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_publishable_key
+```
+
+On Streamlit Cloud, add these in Secrets:
+
+```toml
+NEXT_PUBLIC_SUPABASE_URL = "https://nakkcdzpxdggirujgmtk.supabase.co"
+NEXT_PUBLIC_SUPABASE_ANON_KEY = "your_supabase_publishable_key"
+```
+
+Use the Supabase Publishable key only. Do not add the service_role key to Streamlit.
+
 For DeepSeek study pack, oral exam, clinical case, and weakness analysis:
 
 ```env
