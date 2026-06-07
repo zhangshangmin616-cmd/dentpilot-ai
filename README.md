@@ -45,6 +45,40 @@ Use the Supabase Publishable key only. Do not add the service_role key to Stream
 
 The main Streamlit app keeps users logged in with browser `localStorage` containing only the Supabase `access_token`, `refresh_token`, expiry time, and basic user id/email. It never stores passwords or service role keys. Logout clears both Streamlit session state and the saved browser auth item.
 
+## Per-User Learning Memory
+
+Run `supabase/schema.sql` in the Supabase SQL Editor before public testing. It creates:
+
+- `profiles`
+- `study_sessions`
+- `study_pack_records`
+- `written_exam_attempts`
+- `oral_exam_attempts`
+- `clinical_case_attempts`
+- `user_weaknesses`
+- `usage_limits`
+
+All learning records include `user_id = auth.uid()` and Row Level Security policies only allow users to read/write their own rows.
+
+Persistent modes:
+
+- Study Pack records are saved to `study_pack_records`.
+- AI Written Exam attempts are saved to `written_exam_attempts`.
+- Clinical Case attempts are saved to `clinical_case_attempts`.
+- Realtime Oral Exam history is read from `oral_exam_attempts` when available from the Next.js app.
+- Voice/study usage is tracked per user per day in `usage_limits`.
+
+The selected learning mode is persisted with Streamlit `session_state` plus browser `localStorage`, and is cleared on logout.
+
+Optional admin dashboard:
+
+```env
+ADMIN_EMAILS=your_admin_email@example.com
+SUPABASE_SERVICE_ROLE_KEY=your_server_only_service_role_key
+```
+
+`SUPABASE_SERVICE_ROLE_KEY` is used only on the Streamlit server for admin aggregate counts. Do not expose it to frontend code.
+
 For DeepSeek study pack, oral exam, clinical case, and weakness analysis:
 
 ```env

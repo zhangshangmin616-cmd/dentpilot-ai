@@ -4,6 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -428,10 +429,413 @@ def render_sidebar_account() -> None:
     st.caption(str(email))
     if st.button("\u9000\u51fa\u767b\u5f55", use_container_width=True):
         sign_out_supabase()
+        clear_selected_mode()
         clear_auth_session()
         st.success("\u5df2\u9000\u51fa\u767b\u5f55\u3002")
         st.stop()
     st.markdown("---")
+
+
+def render_my_learning_summary() -> None:
+    try:
+        summary = get_user_learning_summary()
+    except Exception as exc:
+        st.error(f"无法读取学习记录：{exc}")
+        return
+
+    usage = summary.get("usage") or {}
+    study_records = summary.get("study_pack_records") or []
+    written_records = summary.get("written_exam_attempts") or []
+    clinical_records = summary.get("clinical_case_attempts") or []
+    oral_records = summary.get("oral_exam_attempts") or []
+    weaknesses = summary.get("weaknesses") or []
+
+    st.markdown("### 我的学习记录")
+    st.caption(f"今日语音用量：{float(usage.get('voice_minutes_used') or 0):.1f} 分钟")
+    average_score = summary.get("average_score")
+    st.caption(f"近期平均分：{average_score if average_score is not None else '暂无'}")
+    st.caption(
+        f"记录数：复习包 {len(study_records)} / 笔试 {len(written_records)} / 病例 {len(clinical_records)} / 口试 {len(oral_records)}"
+    )
+    if written_records:
+        st.caption(f"最近笔试：{written_records[0].get('topic') or written_records[0].get('subject')}")
+    if clinical_records:
+        st.caption(f"最近病例：{clinical_records[0].get('case_title') or 'Clinical case'}")
+    if oral_records:
+        st.caption(f"最近口试：{oral_records[0].get('topic') or oral_records[0].get('subject')}")
+    if weaknesses:
+        weak_topics = "、".join(str(item.get("topic", "")) for item in weaknesses[:3] if item.get("topic"))
+        st.caption(f"弱点主题：{weak_topics or '暂无'}")
+    if not any([study_records, written_records, clinical_records, oral_records]):
+        st.caption("还没有学习记录。")
+    st.markdown("---")
+
+
+def admin_email_allowlist() -> set[str]:
+    raw = read_config_value("ADMIN_EMAILS", read_config_value("NEXT_PUBLIC_ADMIN_EMAILS", ""))
+    return {email.strip().lower() for email in raw.split(",") if email.strip()}
+
+
+def is_current_user_admin() -> bool:
+    user = get_current_user() or {}
+    email = str(user.get("email") or "").strip().lower()
+    return bool(email and email in admin_email_allowlist())
+
+
+def get_service_role_key() -> str:
+    return read_config_value("SUPABASE_SERVICE_ROLE_KEY", "")
+
+
+def supabase_admin_request(table: str, query: str = "select=*") -> list[dict]:
+    service_role_key = get_service_role_key()
+    if not service_role_key:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY 未配置。")
+    supabase_url, _ = get_supabase_auth_config()
+    response = requests.get(
+        f"{supabase_url}/rest/v1/{table}?{query}",
+        headers={
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(response.text)
+    return response.json() if response.content else []
+
+
+def render_admin_dashboard() -> None:
+    if not is_current_user_admin():
+        return
+    with st.expander("管理员总览", expanded=False):
+        if not get_service_role_key():
+            st.warning("管理员统计需要在服务器环境变量中配置 SUPABASE_SERVICE_ROLE_KEY。")
+            return
+        try:
+            profiles = supabase_admin_request("profiles", "select=id,email,created_at&limit=1000")
+            study = supabase_admin_request("study_pack_records", "select=id,user_id,created_at&limit=1000")
+            written = supabase_admin_request("written_exam_attempts", "select=id,user_id,score,created_at&limit=1000")
+            clinical = supabase_admin_request("clinical_case_attempts", "select=id,user_id,score,created_at&limit=1000")
+            oral = supabase_admin_request("oral_exam_attempts", "select=id,user_id,score,created_at&limit=1000")
+            usage = supabase_admin_request("usage_limits", f"select=*&date=eq.{time.strftime('%Y-%m-%d')}&limit=1000")
+        except Exception as exc:
+            st.error(f"管理员数据读取失败：{exc}")
+            return
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Users", len(profiles))
+        col2.metric("Study Packs", len(study))
+        col3.metric("Voice minutes today", round(sum(float(row.get("voice_minutes_used") or 0) for row in usage), 1))
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Written Exams", len(written))
+        col5.metric("Clinical Cases", len(clinical))
+        col6.metric("Oral Exams", len(oral))
+        if usage:
+            st.dataframe(pd.DataFrame(usage), use_container_width=True, hide_index=True)
+
+
+ALLOWED_MODE_KEYS = {
+    "study_pack": "Study Pack",
+    "written_exam": "AI Written Exam",
+    "clinical_case": "Clinical Case",
+    "weakness_analysis": "Weakness Analysis",
+    "realtime_oral_exam": "Realtime Oral Exam",
+}
+MODE_LABEL_TO_KEY = {label: key for key, label in ALLOWED_MODE_KEYS.items()}
+LOCAL_STORAGE_MODE_KEY = "DENTPILOT_SELECTED_MODE"
+
+
+def make_local_storage_mode_set_js(mode_key: str) -> str:
+    storage_key = json.dumps(LOCAL_STORAGE_MODE_KEY)
+    storage_value = json.dumps(mode_key)
+    return f"localStorage.setItem({storage_key}, {storage_value}); 'saved';"
+
+
+def save_selected_mode(mode_key: str) -> None:
+    if mode_key not in ALLOWED_MODE_KEYS:
+        mode_key = "study_pack"
+    st.session_state["selected_mode"] = mode_key
+    streamlit_js_eval(
+        js_expressions=make_local_storage_mode_set_js(mode_key),
+        key=f"selected_mode_save_{mode_key}",
+    )
+
+
+def load_selected_mode() -> str:
+    session_mode = st.session_state.get("selected_mode")
+    if session_mode in ALLOWED_MODE_KEYS:
+        return session_mode
+
+    raw_value = streamlit_js_eval(
+        js_expressions=(
+            f"localStorage.getItem({json.dumps(LOCAL_STORAGE_MODE_KEY)}) || 'study_pack';"
+        ),
+        key="selected_mode_load",
+    )
+    if raw_value in ALLOWED_MODE_KEYS:
+        st.session_state["selected_mode"] = raw_value
+        return raw_value
+    st.session_state["selected_mode"] = "study_pack"
+    return "study_pack"
+
+
+def clear_selected_mode() -> None:
+    st.session_state.pop("selected_mode", None)
+    streamlit_js_eval(
+        js_expressions=f"localStorage.removeItem({json.dumps(LOCAL_STORAGE_MODE_KEY)}); 'cleared';",
+        key=f"selected_mode_clear_{int(time.time() * 1000)}",
+    )
+
+
+def current_user() -> dict:
+    user = get_current_user() or {}
+    if not user.get("id"):
+        raise RuntimeError("请先登录。")
+    return user
+
+
+def current_user_id() -> str:
+    return str(current_user()["id"])
+
+
+def current_access_token() -> str:
+    token = st.session_state.get("dentpilot_access_token") or (st.session_state.get("auth_session") or {}).get("access_token")
+    if not token:
+        raise RuntimeError("登录会话已过期，请重新登录。")
+    return str(token)
+
+
+def supabase_rest_url(table: str, query: str = "") -> str:
+    supabase_url, _ = get_supabase_auth_config()
+    base = f"{supabase_url}/rest/v1/{table}"
+    return f"{base}?{query}" if query else base
+
+
+def supabase_rest_request(method: str, table: str, query: str = "", payload=None):
+    token = current_access_token()
+    headers = get_auth_headers(token)
+    headers["Accept"] = "application/json"
+    if method.upper() in {"POST", "PATCH"}:
+        headers["Prefer"] = "return=representation"
+
+    response = requests.request(
+        method,
+        supabase_rest_url(table, query),
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        message = data.get("message") or data.get("details") or data.get("hint") or response.text
+        raise RuntimeError(message)
+    if not response.content:
+        return None
+    return response.json()
+
+
+def select_own_rows(table: str, limit: int = 20, extra_query: str = "", order_by: str = "created_at.desc") -> list[dict]:
+    user_id = quote(current_user_id(), safe="")
+    query = f"select=*&user_id=eq.{user_id}&order={order_by}&limit={limit}"
+    if extra_query:
+        query = f"{query}&{extra_query}"
+    data = supabase_rest_request("GET", table, query)
+    return data if isinstance(data, list) else []
+
+
+def insert_own_row(table: str, payload: dict) -> dict | None:
+    payload = {**payload, "user_id": current_user_id()}
+    data = supabase_rest_request("POST", table, "select=*", payload)
+    if isinstance(data, list) and data:
+        return data[0]
+    return None
+
+
+def save_study_pack_record(subject: str, source_title: str, source_text: str, pack: dict, markdown_export: str) -> dict | None:
+    return insert_own_row(
+        "study_pack_records",
+        {
+            "subject": subject,
+            "source_title": source_title,
+            "source_text": source_text,
+            "generated_pack": pack,
+            "markdown_export": markdown_export,
+        },
+    )
+
+
+def get_recent_study_pack_records(limit: int = 10) -> list[dict]:
+    return select_own_rows("study_pack_records", limit)
+
+
+def save_written_exam_attempt(attempt: dict) -> dict | None:
+    result = attempt.get("result") or attempt.get("grading_result") or {}
+    return insert_own_row(
+        "written_exam_attempts",
+        {
+            "session_id": attempt.get("session_id"),
+            "topic": attempt.get("topic") or attempt.get("subject"),
+            "subject": attempt.get("subject"),
+            "difficulty": attempt.get("difficulty"),
+            "course_context": attempt.get("course_context"),
+            "question": attempt.get("question"),
+            "student_answer": attempt.get("answer") or attempt.get("student_answer"),
+            "model_answer": attempt.get("model_answer"),
+            "score": result.get("score"),
+            "feedback": result.get("chinese_feedback") or result.get("feedback"),
+            "covered_points": result.get("covered_points") or [],
+            "missing_points": result.get("missing_points") or [],
+        },
+    )
+
+
+def get_recent_written_exam_attempts(limit: int = 20) -> list[dict]:
+    return select_own_rows("written_exam_attempts", limit)
+
+
+def save_clinical_case_attempt(attempt: dict) -> dict | None:
+    result = attempt.get("result") or {}
+    return insert_own_row(
+        "clinical_case_attempts",
+        {
+            "case_title": attempt.get("case_title"),
+            "case_data": attempt.get("case_data") or {},
+            "student_answer": attempt.get("answer") or attempt.get("student_answer"),
+            "score": result.get("score"),
+            "diagnosis_score": result.get("diagnosis_score"),
+            "treatment_score": result.get("treatment_score"),
+            "missing_points": result.get("missing_points") or [],
+            "feedback": result.get("chinese_feedback") or result.get("feedback"),
+        },
+    )
+
+
+def get_recent_clinical_case_attempts(limit: int = 20) -> list[dict]:
+    return select_own_rows("clinical_case_attempts", limit)
+
+
+def save_oral_exam_attempt(attempt: dict) -> dict | None:
+    result = attempt.get("result") or {}
+    return insert_own_row(
+        "oral_exam_attempts",
+        {
+            "session_id": attempt.get("session_id"),
+            "question": attempt.get("question"),
+            "student_answer": attempt.get("answer") or attempt.get("student_answer"),
+            "score": result.get("score"),
+            "covered_points": result.get("covered_points") or [],
+            "missing_points": result.get("missing_points") or [],
+            "feedback": result.get("chinese_feedback") or result.get("feedback"),
+            "topic": attempt.get("topic"),
+            "subject": attempt.get("subject"),
+            "difficulty": attempt.get("difficulty"),
+        },
+    )
+
+
+def get_recent_oral_exam_attempts(limit: int = 20) -> list[dict]:
+    return select_own_rows("oral_exam_attempts", limit)
+
+
+def get_usage_today() -> dict | None:
+    user_id = quote(current_user_id(), safe="")
+    today = time.strftime("%Y-%m-%d")
+    query = f"select=*&user_id=eq.{user_id}&date=eq.{today}&limit=1"
+    data = supabase_rest_request("GET", "usage_limits", query)
+    if isinstance(data, list) and data:
+        return data[0]
+    inserted = insert_own_row("usage_limits", {"date": today})
+    return inserted
+
+
+def increment_usage(kind: str, amount: float = 1) -> dict | None:
+    usage = get_usage_today()
+    if not usage:
+        return None
+    field_map = {
+        "voice_minutes": "voice_minutes_used",
+        "text_exam": "text_exam_count",
+        "study_pack": "study_pack_count",
+        "case": "case_count",
+    }
+    field = field_map.get(kind)
+    if not field:
+        raise ValueError(f"Unsupported usage kind: {kind}")
+    next_value = float(usage.get(field) or 0) + amount
+    row_id = quote(str(usage["id"]), safe="")
+    user_id = quote(current_user_id(), safe="")
+    today = time.strftime("%Y-%m-%d")
+    data = supabase_rest_request(
+        "PATCH",
+        "usage_limits",
+        f"id=eq.{row_id}&user_id=eq.{user_id}&date=eq.{today}&select=*",
+        {field: next_value},
+    )
+    return data[0] if isinstance(data, list) and data else None
+
+
+def get_user_weakness_summary(limit: int = 20) -> list[dict]:
+    return select_own_rows("user_weaknesses", limit, order_by="last_seen_at.desc")
+
+
+def update_user_weaknesses_from_attempt(subject: str, topic: str, missing_points: list, score: float | None = None) -> None:
+    for point in (missing_points or [topic])[:5]:
+        insert_own_row(
+            "user_weaknesses",
+            {
+                "subject": subject,
+                "topic": str(point or topic),
+                "weakness_type": "missing_point" if missing_points else "practice_topic",
+                "score_avg": score,
+                "attempt_count": 1,
+            },
+        )
+
+
+def get_user_learning_summary() -> dict:
+    written = get_recent_written_exam_attempts(50)
+    clinical = get_recent_clinical_case_attempts(50)
+    oral = get_recent_oral_exam_attempts(50)
+    study = get_recent_study_pack_records(50)
+    weaknesses = get_user_weakness_summary(20)
+    usage = get_usage_today()
+    scores = [
+        float(item.get("score"))
+        for item in [*written, *clinical, *oral]
+        if item.get("score") is not None
+    ]
+    return {
+        "study_pack_records": study,
+        "written_exam_attempts": written,
+        "clinical_case_attempts": clinical,
+        "oral_exam_attempts": oral,
+        "weaknesses": weaknesses,
+        "usage": usage,
+        "average_score": round(sum(scores) / len(scores), 1) if scores else None,
+    }
+
+
+def load_persistent_learning_records() -> None:
+    try:
+        st.session_state["study_pack_records"] = get_recent_study_pack_records()
+    except Exception as exc:
+        st.session_state["study_pack_records_error"] = str(exc)
+    try:
+        st.session_state["oral_exam_history"] = get_recent_written_exam_attempts()
+    except Exception as exc:
+        st.session_state["oral_exam_history_error"] = str(exc)
+    try:
+        st.session_state["clinical_case_history"] = get_recent_clinical_case_attempts()
+    except Exception as exc:
+        st.session_state["clinical_case_history_error"] = str(exc)
+    try:
+        st.session_state["realtime_oral_history"] = get_recent_oral_exam_attempts()
+    except Exception as exc:
+        st.session_state["realtime_oral_history_error"] = str(exc)
 
 
 def extract_pdf_text(uploaded_file) -> tuple[str, int]:
@@ -1120,6 +1524,7 @@ st.markdown(
 
 
 render_auth_gate()
+load_persistent_learning_records()
 
 
 sample = (
@@ -1275,12 +1680,25 @@ def render_oral_exam_mode(default_text: str):
                         "subject": oral_subject,
                         "difficulty": question_data.get("difficulty", oral_difficulty),
                         "topic": question_data.get("topic", ""),
+                        "course_context": oral_course_text,
                         "question": question_data.get("question", ""),
                         "expected_points": question_data.get("expected_points", []),
+                        "model_answer": question_data.get("model_answer", ""),
                         "answer": student_answer,
                         "result": result,
                         "grading_result": result,
                     }
+                    try:
+                        save_written_exam_attempt(attempt)
+                        update_user_weaknesses_from_attempt(
+                            oral_subject,
+                            attempt.get("topic") or oral_subject,
+                            result.get("missing_points") or [],
+                            result.get("score"),
+                        )
+                        increment_usage("text_exam", 1)
+                    except Exception as exc:
+                        st.warning(f"笔试记录保存失败：{exc}")
                     st.session_state["oral_exam_history"].insert(0, attempt)
                     st.session_state["oral_exam_history"] = st.session_state["oral_exam_history"][:10]
                     st.session_state["oral_exam_rounds"].append(attempt)
@@ -1322,17 +1740,21 @@ def render_oral_exam_mode(default_text: str):
                 st.markdown(f"**Feedback:** {result.get('chinese_feedback', '')}")
 
     st.markdown("### 最近笔试记录")
+    if st.session_state.get("oral_exam_history_error"):
+        st.error(f"读取笔试记录失败：{st.session_state['oral_exam_history_error']}")
     history = st.session_state.get("oral_exam_history", [])
     if not history:
         st.info("还没有笔试记录。生成问题并提交回答后，会在这里保存最近记录。")
     else:
         for index, attempt in enumerate(history[:5], start=1):
             result = attempt.get("result", {})
-            label = f"{index}. {attempt.get('topic') or attempt.get('subject')} - {result.get('score', 0)}/100 ({result.get('level', '')})"
+            score = result.get("score", attempt.get("score", 0))
+            level = result.get("level", "")
+            label = f"{index}. {attempt.get('topic') or attempt.get('subject')} - {score}/100 ({level})"
             with st.expander(label):
                 st.markdown(f"**Question:** {attempt.get('question', '')}")
-                st.markdown(f"**Your Answer:** {attempt.get('answer', '')}")
-                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback', '')}")
+                st.markdown(f"**Your Answer:** {attempt.get('answer') or attempt.get('student_answer', '')}")
+                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback') or attempt.get('feedback', '')}")
 
     st.markdown(
         """
@@ -1511,9 +1933,21 @@ def render_clinical_case_mode(default_text: str):
                         "subject": case_subject,
                         "difficulty": case_difficulty,
                         "case_title": case_data.get("case_title", ""),
+                        "case_data": case_data,
                         "answer": student_answer,
                         "result": result,
                     }
+                    try:
+                        save_clinical_case_attempt(attempt)
+                        update_user_weaknesses_from_attempt(
+                            case_subject,
+                            case_data.get("case_title", case_subject),
+                            result.get("missing_points") or [],
+                            result.get("score"),
+                        )
+                        increment_usage("case", 1)
+                    except Exception as exc:
+                        st.warning(f"病例记录保存失败：{exc}")
                     st.session_state["clinical_case_history"].insert(0, attempt)
                     st.session_state["clinical_case_history"] = st.session_state["clinical_case_history"][:10]
                 except ClinicalCaseConfigError as exc:
@@ -1530,17 +1964,21 @@ def render_clinical_case_mode(default_text: str):
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("### 最近病例训练记录")
+    if st.session_state.get("clinical_case_history_error"):
+        st.error(f"读取病例记录失败：{st.session_state['clinical_case_history_error']}")
     history = st.session_state.get("clinical_case_history", [])
     if not history:
         st.info("还没有病例训练记录。生成病例并提交回答后，会在这里保存最近记录。")
     else:
         for index, attempt in enumerate(history[:5], start=1):
             result = attempt.get("result", {})
-            label = f"{index}. {attempt.get('case_title') or attempt.get('subject')} - {result.get('score', 0)}/100 ({result.get('level', '')})"
+            score = result.get("score", attempt.get("score", 0))
+            level = result.get("level", "")
+            label = f"{index}. {attempt.get('case_title') or attempt.get('subject')} - {score}/100 ({level})"
             with st.expander(label):
                 st.markdown(f"**Subject:** {attempt.get('subject', '')}")
-                st.markdown(f"**Your Answer:** {attempt.get('answer', '')}")
-                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback', '')}")
+                st.markdown(f"**Your Answer:** {attempt.get('answer') or attempt.get('student_answer', '')}")
+                st.markdown(f"**Chinese Feedback:** {result.get('chinese_feedback') or attempt.get('feedback', '')}")
 
     st.markdown(
         """
@@ -1555,6 +1993,9 @@ def render_clinical_case_mode(default_text: str):
 def render_weakness_analysis_mode():
     oral_history = st.session_state.get("oral_exam_history", [])
     clinical_history = st.session_state.get("clinical_case_history", [])
+    realtime_oral_history = st.session_state.get("realtime_oral_history", [])
+    study_pack_records = st.session_state.get("study_pack_records", [])
+    combined_exam_history = [*oral_history, *realtime_oral_history]
 
     st.markdown(
         """
@@ -1571,12 +2012,14 @@ def render_weakness_analysis_mode():
     st.markdown('<div class="input-panel">', unsafe_allow_html=True)
     st.markdown('<div class="section-label">练习记录</div>', unsafe_allow_html=True)
 
-    metric_col_1, metric_col_2 = st.columns(2)
+    metric_col_1, metric_col_2, metric_col_3, metric_col_4 = st.columns(4)
     metric_col_1.metric("Written Exam Attempts", len(oral_history))
     metric_col_2.metric("Clinical Case Attempts", len(clinical_history))
+    metric_col_3.metric("Oral Exam Attempts", len(realtime_oral_history))
+    metric_col_4.metric("Study Packs", len(study_pack_records))
 
-    if not oral_history and not clinical_history:
-        st.info("Please complete at least one oral exam or clinical case first.")
+    if not combined_exam_history and not clinical_history:
+        st.info("请先完成至少一次笔试、病例或口试训练，系统会根据记录分析弱点。")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -1584,9 +2027,17 @@ def render_weakness_analysis_mode():
         try:
             with st.spinner("正在分析你的练习弱点..."):
                 st.session_state["weakness_analysis_result"] = analyze_weaknesses(
-                    oral_history,
+                    combined_exam_history,
                     clinical_history,
                 )
+                for attempt in [*combined_exam_history, *clinical_history]:
+                    result_data = attempt.get("result") or attempt
+                    update_user_weaknesses_from_attempt(
+                        attempt.get("subject") or "Dentistry",
+                        attempt.get("topic") or attempt.get("case_title") or "General practice",
+                        result_data.get("missing_points") or [],
+                        result_data.get("score"),
+                    )
             st.success("弱点分析已生成。")
         except WeaknessAnalysisConfigError as exc:
             st.error(str(exc))
@@ -1650,13 +2101,19 @@ def render_weakness_analysis_mode():
 
 with st.sidebar:
     render_sidebar_account()
+    render_my_learning_summary()
+    render_admin_dashboard()
     st.markdown("## 🦷 DentPilot AI")
     st.caption("面向中国留学生的英授牙科学习助手")
     st.markdown("---")
 
+    mode_options = ["Study Pack", "AI Written Exam", "Clinical Case", "Weakness Analysis", "Realtime Oral Exam"]
+    selected_mode_key = load_selected_mode()
+    selected_mode_label = ALLOWED_MODE_KEYS.get(selected_mode_key, "Study Pack")
     mode = st.radio(
         "学习模式",
-        ["Study Pack", "AI Written Exam", "Clinical Case", "Weakness Analysis", "Realtime Oral Exam"],
+        mode_options,
+        index=mode_options.index(selected_mode_label) if selected_mode_label in mode_options else 0,
         format_func={
             "Study Pack": "Study Pack / 复习包",
             "AI Written Exam": "AI Written Exam / 笔试训练",
@@ -1665,6 +2122,7 @@ with st.sidebar:
             "Realtime Oral Exam": "🎙️ Realtime Oral Exam / 实时口试",
         }.get,
     )
+    save_selected_mode(MODE_LABEL_TO_KEY.get(mode, "study_pack"))
 
     mode_descriptions = {
         "Study Pack": "上传英文课件或 PDF，生成中文讲解、术语、Quiz、Anki 和 PDF 复习包。",
@@ -1699,6 +2157,24 @@ if mode == "Weakness Analysis":
 
 if mode == "Realtime Oral Exam":
     render_realtime_oral_exam_page()
+    st.markdown("### 最近实时口试记录")
+    if st.session_state.get("realtime_oral_history_error"):
+        st.error(f"读取实时口试记录失败：{st.session_state['realtime_oral_history_error']}")
+    try:
+        usage = get_usage_today() or {}
+        st.info(f"今日语音用量：{float(usage.get('voice_minutes_used') or 0):.1f} 分钟")
+    except Exception as exc:
+        st.warning(f"语音用量读取失败：{exc}")
+    realtime_history = st.session_state.get("realtime_oral_history", [])
+    if not realtime_history:
+        st.info("还没有实时口试记录。实时口试记录由新版口试 App 保存；这里不会显示虚假记录。")
+    else:
+        for index, attempt in enumerate(realtime_history[:5], start=1):
+            label = f"{index}. {attempt.get('topic') or attempt.get('subject') or 'Oral exam'} - {attempt.get('score', '暂无')}"
+            with st.expander(label):
+                st.markdown(f"**Question:** {attempt.get('question', '')}")
+                st.markdown(f"**Your Answer:** {attempt.get('student_answer', '')}")
+                st.markdown(f"**Feedback:** {attempt.get('feedback', '')}")
     st.stop()
 
 
@@ -1867,6 +2343,34 @@ with col_b:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
+st.markdown("### 最近复习包记录")
+if st.session_state.get("study_pack_records_error"):
+    st.error(f"读取复习包记录失败：{st.session_state['study_pack_records_error']}")
+recent_study_pack_records = st.session_state.get("study_pack_records", [])
+if not recent_study_pack_records:
+    st.info("还没有复习包记录。")
+else:
+    for index, record in enumerate(recent_study_pack_records[:5], start=1):
+        created_at = str(record.get("created_at", ""))[:19].replace("T", " ")
+        label = f"{index}. {record.get('source_title') or record.get('subject') or 'Study Pack'} · {created_at}"
+        with st.expander(label):
+            st.caption(f"科目：{record.get('subject', 'Dentistry')}")
+            source_preview = str(record.get("source_text") or "")[:500]
+            if source_preview:
+                st.write(source_preview)
+            if st.button("打开此复习包", key=f"open_study_pack_{record.get('id')}"):
+                reopened_pack = record.get("generated_pack") or {}
+                reopened_subject = record.get("subject") or "Dentistry"
+                st.session_state["study_pack_result"] = reopened_pack
+                st.session_state["study_pack_md_bytes"] = str(record.get("markdown_export") or "").encode("utf-8")
+                try:
+                    st.session_state["study_pack_pdf_bytes"] = build_study_pack_pdf(reopened_pack, reopened_subject)
+                except Exception:
+                    st.session_state["study_pack_pdf_bytes"] = None
+                st.session_state["anki_csv_bytes"] = build_anki_csv_bytes(reopened_pack, reopened_subject)
+                st.success("已打开保存的复习包。")
+                st.rerun()
+
 
 if generate:
     if not text.strip():
@@ -1902,6 +2406,22 @@ if generate:
     st.session_state["study_pack_pdf_bytes"] = pdf_bytes
     st.session_state["study_pack_md_bytes"] = markdown_bytes
     st.session_state["anki_csv_bytes"] = anki_csv_bytes
+    try:
+        source_title = uploaded_course_file.name if uploaded_course_file is not None else "Pasted course text"
+        saved_record = save_study_pack_record(
+            subject,
+            source_title,
+            text,
+            pack,
+            markdown_bytes.decode("utf-8", errors="ignore"),
+        )
+        if saved_record:
+            st.session_state.setdefault("study_pack_records", [])
+            st.session_state["study_pack_records"].insert(0, saved_record)
+            st.session_state["study_pack_records"] = st.session_state["study_pack_records"][:10]
+        increment_usage("study_pack", 1)
+    except Exception as exc:
+        st.warning(f"复习包记录保存失败：{exc}")
 
     if pdf_bytes:
         st.download_button(
