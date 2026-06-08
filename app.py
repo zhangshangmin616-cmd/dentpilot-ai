@@ -93,6 +93,18 @@ def save_ui_lang_to_local_storage(lang: str) -> None:
 def init_ui_language() -> None:
     st.session_state.setdefault("ui_lang", "zh")
     try:
+        query_lang = st.query_params.get("ui_lang") or st.query_params.get("lang")
+        if isinstance(query_lang, list):
+            query_lang = query_lang[0] if query_lang else ""
+        query_lang = normalize_lang(str(query_lang)) if query_lang else ""
+        if query_lang in {"zh", "en"}:
+            st.session_state["ui_lang"] = query_lang
+            st.session_state["ui_lang_loaded"] = True
+            save_ui_lang_to_local_storage(query_lang)
+            return
+    except Exception:
+        pass
+    try:
         raw_value = streamlit_js_eval(
             js_expressions=(
                 f"localStorage.getItem({json.dumps(LOCAL_STORAGE_UI_LANG_KEY)}) || "
@@ -1825,40 +1837,64 @@ def render_oral_exam_mode(default_text: str):
     wrong_topics = get_recent_wrong_written_topics()
 
     st.markdown(
-        """
+        f"""
         <section class="hero">
-            <div class="eyebrow">AI 笔试训练</div>
-            <h1 class="hero-title">生成真实口试风格的笔试题</h1>
-            <p class="hero-subtitle">AI 会优先使用学校题库命中题目，再结合课程内容生成高频考点。</p>
-            <p class="hero-copy">模式不同，难度和题目策略不同，适合日常复习、考前模拟和错题强化。</p>
+            <div class="eyebrow">{t("written_exam_mode")}</div>
+            <h1 class="hero-title">{'Generate school-style written exam questions' if get_ui_lang() == 'en' else '生成真实口试风格的笔试题'}</h1>
+            <p class="hero-subtitle">{'The system prioritizes your school question bank, then uses course content to generate high-yield practice.' if get_ui_lang() == 'en' else 'AI 会优先使用学校题库命中题目，再结合课程内容生成高频考点。'}</p>
+            <p class="hero-copy">{'Different modes control pressure, hints, scoring, and wrong-question review.' if get_ui_lang() == 'en' else '模式不同，难度和题目策略不同，适合日常复习、考前模拟和错题强化。'}</p>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
     st.markdown('<div class="input-panel">', unsafe_allow_html=True)
-    st.markdown('<div class="section-label">笔试设置</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-copy">课程内容可来自 Study Pack、课本或课堂提要；先设置模式，再开始生成题目。</div>',
+        f'<div class="section-label">{"Written Exam Settings" if get_ui_lang() == "en" else "笔试设置"}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="section-copy">{"Course content can come from Study Pack, textbooks, or lecture notes. Configure the mode first, then generate questions." if get_ui_lang() == "en" else "课程内容可来自 Study Pack、课本或课堂提要；先设置模式，再开始生成题目。"}</div>',
         unsafe_allow_html=True,
     )
 
     if not bank_available:
-        st.warning("未找到学校题库，请先添加 data/school_question_bank.json。")
+        st.warning("School question bank not found. Please add data/school_question_bank.json." if get_ui_lang() == "en" else "未找到学校题库，请先添加 data/school_question_bank.json。")
 
-    selected_mode = st.selectbox(t("written_exam_mode_label"), WRITTEN_MODES, index=WRITTEN_MODES.index(st.session_state["oral_mode"]))
-    selected_type = st.selectbox(t("question_type"), WRITTEN_QUESTION_TYPES, index=WRITTEN_QUESTION_TYPES.index(st.session_state["oral_question_type"]))
+    selected_mode = st.selectbox(
+        t("written_exam_mode_label"),
+        WRITTEN_MODES,
+        index=WRITTEN_MODES.index(st.session_state["oral_mode"]),
+        format_func={
+            "日常练习": "Daily Practice" if get_ui_lang() == "en" else "日常练习",
+            "考前模拟": "Mock Exam" if get_ui_lang() == "en" else "考前模拟",
+            "错题强化": "Wrong Question Review" if get_ui_lang() == "en" else "错题强化",
+        }.get,
+    )
+    selected_type = st.selectbox(
+        t("question_type"),
+        WRITTEN_QUESTION_TYPES,
+        index=WRITTEN_QUESTION_TYPES.index(st.session_state["oral_question_type"]),
+        format_func={
+            "自动混合": "Auto Mix" if get_ui_lang() == "en" else "自动混合",
+            "MCQ 单选题": "MCQ" if get_ui_lang() == "en" else "MCQ 单选题",
+            "Short Answer 简答题": "Short Answer" if get_ui_lang() == "en" else "Short Answer 简答题",
+            "Case-based 病例题": "Case-based" if get_ui_lang() == "en" else "Case-based 病例题",
+            "True / False 判断题": "True / False" if get_ui_lang() == "en" else "True / False 判断题",
+            "Matching 匹配题": "Matching" if get_ui_lang() == "en" else "Matching 匹配题",
+        }.get,
+    )
 
     oral_default_text = st.session_state.get("last_course_text", default_text)
     oral_course_text = st.text_area(
         t("course_content"),
         value=oral_default_text,
         height=200,
-        placeholder="粘贴课程内容（英文）或课堂提要...",
+        placeholder="Paste course content in English or lecture notes..." if get_ui_lang() == "en" else "粘贴课程内容（英文）或课堂提要...",
         key="oral_course_text",
     )
 
-    st.markdown("### 配置")
+    st.markdown("### Configuration" if get_ui_lang() == "en" else "### 配置")
     control_col_1, control_col_2, control_col_3 = st.columns(3)
     with control_col_1:
         oral_subject = st.selectbox(
@@ -1887,7 +1923,11 @@ def render_oral_exam_mode(default_text: str):
     if selected_mode == "错题强化":
         inferred_topic = _ensure_written_topic_from_input(exam_topic, oral_subject, wrong_topics)
         if inferred_topic and inferred_topic != exam_topic:
-            st.caption(f"错题强化：已为你自动选择最近错题主题「{inferred_topic}」")
+            st.caption(
+                f"Wrong Question Review: selected your recent weak topic: {inferred_topic}"
+                if get_ui_lang() == "en"
+                else f"错题强化：已为你自动选择最近错题主题「{inferred_topic}」"
+            )
             exam_topic = inferred_topic
             st.session_state["oral_exam_topic"] = exam_topic
 
@@ -1896,16 +1936,16 @@ def render_oral_exam_mode(default_text: str):
     st.session_state["oral_exam_rounds_target"] = int(oral_question_count) if selected_mode == "考前模拟" else 1
 
     if selected_mode == "错题强化" and not wrong_topics:
-        st.info("你还没有错题记录，请先完成日常练习或考前模拟。")
+        st.info("No wrong-question records yet. Please complete Daily Practice or Mock Exam first." if get_ui_lang() == "en" else "你还没有错题记录，请先完成日常练习或考前模拟。")
 
     if st.button(t("generate_written_question"), type="primary", use_container_width=True):
         if not oral_course_text.strip():
-            st.error("请先填写课程内容。")
+            st.error("Please enter course content first." if get_ui_lang() == "en" else "请先填写课程内容。")
         elif selected_mode == "错题强化" and not wrong_topics:
-            st.info("你还没有错题记录，请先完成日常练习或考前模拟。")
+            st.info("No wrong-question records yet. Please complete Daily Practice or Mock Exam first." if get_ui_lang() == "en" else "你还没有错题记录，请先完成日常练习或考前模拟。")
         else:
             try:
-                with st.spinner("正在生成题目..."):
+                with st.spinner("Generating question..." if get_ui_lang() == "en" else "正在生成题目..."):
                     prepared = _prepare_written_question(
                         exam_topic=exam_topic.strip() or _ensure_written_topic_from_input("", oral_subject, wrong_topics),
                         subject=oral_subject,
@@ -2577,24 +2617,24 @@ if mode == "Realtime Oral Exam":
 
 
 st.markdown(
-    """
+    f"""
     <section class="hero">
-        <div class="eyebrow">英授牙科/医学课程学习助手</div>
+        <div class="eyebrow">{t("home_eyebrow")}</div>
         <h1 class="hero-title">DentPilot AI</h1>
-        <p class="hero-subtitle">AI Study Assistant for English-Taught Dental Students</p>
-        <p class="hero-copy">为中国留学生设计：把英文 lecture、PDF、PPT 和教材段落整理成可复习的中文讲解、牙科术语、自测题、Anki 卡片和 PDF 复习包。</p>
+        <p class="hero-subtitle">{t("home_subtitle")}</p>
+        <p class="hero-copy">{t("home_copy")}</p>
         <div class="hero-metrics">
             <div class="metric-pill">
-                <div class="metric-value">中文</div>
-                <div class="metric-label">先理解，再背诵</div>
+                <div class="metric-value">{t("metric_cn_value")}</div>
+                <div class="metric-label">{t("metric_cn_label")}</div>
             </div>
             <div class="metric-pill">
-                <div class="metric-value">自测</div>
-                <div class="metric-label">检查概念是否掌握</div>
+                <div class="metric-value">{t("metric_quiz_value")}</div>
+                <div class="metric-label">{t("metric_quiz_label")}</div>
             </div>
             <div class="metric-pill">
                 <div class="metric-value">Anki</div>
-                <div class="metric-label">导出 CSV 复习卡片</div>
+                <div class="metric-label">{t("metric_anki_label")}</div>
             </div>
         </div>
     </section>
@@ -2604,27 +2644,27 @@ st.markdown(
 
 
 st.markdown(
-    """
+    f"""
     <div class="feature-grid">
         <div class="feature-card">
             <div class="feature-icon">01</div>
-            <div class="feature-title">中文讲解</div>
-            <div class="feature-copy">把密集的英文牙科/医学内容转成适合中国学生理解的中文复习笔记。</div>
+            <div class="feature-title">{t("feature_cn_title")}</div>
+            <div class="feature-copy">{t("feature_cn_copy")}</div>
         </div>
         <div class="feature-card">
             <div class="feature-icon">02</div>
-            <div class="feature-title">牙科术语表</div>
-            <div class="feature-copy">匹配课程关键词，建立中英文术语和定义之间的联系。</div>
+            <div class="feature-title">{t("feature_terms_title")}</div>
+            <div class="feature-copy">{t("feature_terms_copy")}</div>
         </div>
         <div class="feature-card">
             <div class="feature-icon">03</div>
-            <div class="feature-title">Quiz 自测</div>
-            <div class="feature-copy">检查定义、机制链、临床意义和高频考点是否真正掌握。</div>
+            <div class="feature-title">{t("feature_quiz_title")}</div>
+            <div class="feature-copy">{t("feature_quiz_copy")}</div>
         </div>
         <div class="feature-card">
             <div class="feature-icon">04</div>
-            <div class="feature-title">复习资料导出</div>
-            <div class="feature-copy">导出 Anki CSV 和 PDF 复习包，方便考前整理和间隔复习。</div>
+            <div class="feature-title">{t("feature_export_title")}</div>
+            <div class="feature-copy">{t("feature_export_copy")}</div>
         </div>
     </div>
     """,
@@ -2643,12 +2683,12 @@ st.markdown(
     f"""
     <div class="example-grid">
         <div class="example-card">
-            <div class="example-title">示例输入</div>
+            <div class="example-title">{t("example_input")}</div>
             <div class="example-copy">{sample}</div>
         </div>
         <div class="workflow-card">
-            <div class="example-title">生成内容</div>
-            <div class="example-copy">1. 中文讲解<br>2. 术语表<br>3. Quiz 自测<br>4. Anki CSV<br>5. PDF 复习包</div>
+            <div class="example-title">{t("generated_content")}</div>
+            <div class="example-copy">{t("study_pack_workflow")}</div>
         </div>
     </div>
     """,
@@ -2656,9 +2696,9 @@ st.markdown(
 )
 
 uploaded_course_file = st.file_uploader(
-    "上传 PDF / Word / TXT 课程资料",
+    t("upload_course_file"),
     type=["pdf", "docx", "txt"],
-    help="支持英文 lecture PDF、Word(docx)、TXT、教材节选或课程讲义。可选中文本 PDF、docx 和 txt 的提取效果最好。",
+    help=t("upload_course_help"),
 )
 
 uploaded_text = ""
@@ -2695,12 +2735,12 @@ text = st.text_area(
     t("course_content"),
     value=uploaded_text or sample,
     height=220,
-    placeholder="在这里粘贴英文牙科 lecture、PPT、Word、TXT 或教材内容...",
+    placeholder=t("course_placeholder"),
 )
 st.session_state["last_course_text"] = text
 
 subject = st.selectbox(
-    "科目",
+    t("subject"),
     [
         "Dentistry",
         "Endodontics",
@@ -2717,27 +2757,33 @@ if not subject:
     subject = "Dentistry"
 
 generation_depth = st.selectbox(
-    "生成深度",
+    t("generation_depth"),
     ["快速总结", "标准复习包", "考前冲刺包", "详细逐题版"],
     index=1,
-    help="大文件建议使用“标准复习包”或“详细逐题版”，系统会按题号/章节逐个生成，避免后半部分被忽略。",
+    format_func={
+        "快速总结": t("depth_quick"),
+        "标准复习包": t("depth_standard"),
+        "考前冲刺包": t("depth_cram"),
+        "详细逐题版": t("depth_detailed"),
+    }.get,
+    help=t("generation_depth_help"),
 )
-st.caption("真实考试资料会按题号或章节拆分生成。标准版默认每题都有重点；详细逐题版覆盖最多，但生成时间更长。")
+st.caption(t("generation_depth_caption"))
 
 expected_section_count = st.number_input(
-    "预期题目数量（可选）",
+    t("expected_section_count"),
     min_value=0,
     max_value=200,
     value=0,
     step=1,
-    help="如果你知道文件里有 28 题，就填 28。系统会优先按连续题号识别，避免 PDF/Word 提取后漏题。",
+    help=t("expected_section_help"),
 )
 
 col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
 with col_a:
     generate = st.button(t("generate_study_pack"), type="primary", use_container_width=True)
 with col_b:
-    st.caption("建议先用一小段 lecture/PPT 文本测试，结果会更清晰。")
+    st.caption(t("small_test_tip"))
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -2746,7 +2792,7 @@ if st.session_state.get("study_pack_records_error"):
     st.error(f"读取复习包记录失败：{st.session_state['study_pack_records_error']}")
 recent_study_pack_records = st.session_state.get("study_pack_records", [])
 if not recent_study_pack_records:
-    st.info("还没有复习包记录。")
+    st.info(t("no_study_pack_records"))
 else:
     for index, record in enumerate(recent_study_pack_records[:5], start=1):
         created_at = str(record.get("created_at", ""))[:19].replace("T", " ")
@@ -2756,7 +2802,7 @@ else:
             source_preview = str(record.get("source_text") or "")[:500]
             if source_preview:
                 st.write(source_preview)
-            if st.button("打开此复习包", key=f"open_study_pack_{record.get('id')}"):
+            if st.button(t("open_study_pack"), key=f"open_study_pack_{record.get('id')}"):
                 reopened_pack = record.get("generated_pack") or {}
                 reopened_subject = record.get("subject") or "Dentistry"
                 st.session_state["study_pack_result"] = reopened_pack
