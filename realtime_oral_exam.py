@@ -2,6 +2,7 @@ import os
 from html import escape
 
 import streamlit as st
+from ui_i18n import get_ui_text, normalize_lang
 
 
 DEFAULT_ORAL_APP_URL = "https://dentpilot-oral-app.vercel.app"
@@ -23,7 +24,8 @@ def get_oral_app_url() -> str:
     return DEFAULT_ORAL_APP_URL
 
 
-def render_realtime_oral_exam_page():
+def render_realtime_oral_exam_page(lang: str = "zh"):
+    lang = normalize_lang(lang)
     oral_app_url = get_oral_app_url()
     escaped_oral_app_url = escape(oral_app_url, quote=True)
     is_local_url = oral_app_url.startswith("http://localhost") or oral_app_url.startswith(
@@ -31,16 +33,15 @@ def render_realtime_oral_exam_page():
     )
 
     st.markdown(
-        """
+        f"""
         <section class="oral-app-hero">
-            <h1 class="oral-app-title">🎙️ 实时口试 App</h1>
+            <h1 class="oral-app-title">🎙️ {get_ui_text(lang, "realtime_oral_app")}</h1>
             <p class="oral-app-subtitle">
-                进入新版口试房间，输入课程主题和讲义内容后，AI 教授会根据你的内容直接开始英文口试。
+                {get_ui_text(lang, "realtime_oral_subtitle")}
             </p>
             <div class="oral-app-hero-card">
                 <p>
-                    这是新版实时口试界面，不再是通用 AI 电话窗口。
-                    你可以输入口试主题和课程内容，点击开始口试，AI 教授会根据你的内容提问、追问并给出反馈。
+                    {"This is the new realtime oral exam room, not a generic AI phone widget. Enter your topic and course content, then start a focused English oral exam." if lang == "en" else "这是新版实时口试界面，不再是通用 AI 电话窗口。你可以输入口试主题和课程内容，点击开始口试，AI 教授会根据你的内容提问、追问并给出反馈。"}
                 </p>
             </div>
         </section>
@@ -48,13 +49,23 @@ def render_realtime_oral_exam_page():
         unsafe_allow_html=True,
     )
 
-    feature_cards = [
-        ("教授头像与真实口试房间界面", "更像真实考场，而不是通用电话窗口。"),
-        ("必须输入主题后才能开始", "避免泛泛开场，让每次口试都围绕你的主题。"),
-        ("AI 教授围绕课程内容提问", "根据课程主题和讲义内容展开提问与追问。"),
-        ("实时英文口试与追问", "用英文口头回答，训练真实 oral exam 的表达节奏。"),
-        ("适合中国英授口腔/医学生", "中文入口降低操作负担，英文保留在考试训练中。"),
-    ]
+    feature_cards = (
+        [
+            ("Professor avatar and exam room UI", "Feels closer to a real oral exam than a generic call window."),
+            ("Topic required before starting", "Avoids generic openings and keeps each session focused."),
+            ("Questions based on course content", "The AI professor asks and follows up around your material."),
+            ("Realtime English oral exam", "Practice answering aloud in English under oral exam pressure."),
+            ("Built for English-taught medical/dental students", "UI can be English while the oral exam remains English practice."),
+        ]
+        if lang == "en"
+        else [
+            ("教授头像与真实口试房间界面", "更像真实考场，而不是通用电话窗口。"),
+            ("必须输入主题后才能开始", "避免泛泛开场，让每次口试都围绕你的主题。"),
+            ("AI 教授围绕课程内容提问", "根据课程主题和讲义内容展开提问与追问。"),
+            ("实时英文口试与追问", "用英文口头回答，训练真实 oral exam 的表达节奏。"),
+            ("适合中国英授口腔/医学生", "中文入口降低操作负担，英文保留在考试训练中。"),
+        ]
+    )
 
     st.markdown('<div class="oral-app-feature-grid">', unsafe_allow_html=True)
     for title, copy in feature_cards:
@@ -70,7 +81,7 @@ def render_realtime_oral_exam_page():
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.link_button(
-        "🎙️ 进入新版实时口试 App",
+        f"🎙️ {get_ui_text(lang, 'open_realtime_oral_app')}",
         oral_app_url,
         use_container_width=True,
     )

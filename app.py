@@ -43,6 +43,7 @@ from question_bank_engine import (
     load_school_question_bank,
 )
 from realtime_oral_exam import render_realtime_oral_exam_page
+from ui_i18n import get_ui_text, normalize_lang
 from weakness_analysis import (
     WeaknessAnalysisConfigError,
     WeaknessAnalysisJSONError,
@@ -56,6 +57,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 SUPABASE_AUTH_URL = "https://nakkcdzpxdggirujgmtk.supabase.co/auth/v1"
 DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_mBC1RRvQRbZmNfofqDap2w_z0DjtKrE"
 LOCAL_STORAGE_AUTH_KEY = "DENTPILOT_AUTH_SESSION"
+LOCAL_STORAGE_UI_LANG_KEY = "DENTPILOT_UI_LANG"
 LOCAL_STORAGE_EMPTY = "__DENTPILOT_AUTH_EMPTY__"
 AUTH_SESSION_KEYS = (
     "dentpilot_user",
@@ -65,6 +67,62 @@ AUTH_SESSION_KEYS = (
     "auth_user",
     "auth_session",
 )
+
+
+def get_ui_lang() -> str:
+    return normalize_lang(st.session_state.get("ui_lang", "zh"))
+
+
+def t(key: str) -> str:
+    return get_ui_text(get_ui_lang(), key)
+
+
+def save_ui_lang_to_local_storage(lang: str) -> None:
+    try:
+        streamlit_js_eval(
+            js_expressions=(
+                f"localStorage.setItem({json.dumps(LOCAL_STORAGE_UI_LANG_KEY)}, "
+                f"{json.dumps(normalize_lang(lang))}); 'saved';"
+            ),
+            key=f"ui_lang_save_{int(time.time() * 1000)}",
+        )
+    except Exception:
+        pass
+
+
+def init_ui_language() -> None:
+    st.session_state.setdefault("ui_lang", "zh")
+    try:
+        raw_value = streamlit_js_eval(
+            js_expressions=(
+                f"localStorage.getItem({json.dumps(LOCAL_STORAGE_UI_LANG_KEY)}) || "
+                f"{json.dumps('')};"
+            ),
+            key="ui_lang_load",
+        )
+        if raw_value in {"zh", "en"} and "ui_lang_loaded" not in st.session_state:
+            st.session_state["ui_lang"] = raw_value
+            st.session_state["ui_lang_loaded"] = True
+    except Exception:
+        pass
+
+
+def render_ui_language_selector() -> None:
+    lang = get_ui_lang()
+    options = ["zh", "en"]
+    selected = st.selectbox(
+        t("ui_language"),
+        options,
+        index=options.index(lang),
+        format_func=lambda value: get_ui_text(lang, value),
+        key="ui_lang_selector",
+    )
+    selected = normalize_lang(selected)
+    if selected != st.session_state.get("ui_lang"):
+        st.session_state["ui_lang"] = selected
+        save_ui_lang_to_local_storage(selected)
+        st.rerun()
+    st.caption(t("ui_note"))
 
 
 def read_config_value(name: str, default: str = "") -> str:
@@ -387,17 +445,17 @@ def render_auth_gate() -> None:
         return
 
     if st.session_state.pop("auth_local_storage_pending", False):
-        st.info("\u6b63\u5728\u6062\u590d\u767b\u5f55\u72b6\u6001...")
+        st.info(t("restoring_login"))
         render_auth_debug()
-        if not st.button("\u7ee7\u7eed\u767b\u5f55", use_container_width=True):
+        if not st.button(t("continue_login"), use_container_width=True):
             st.stop()
 
     st.markdown(
-        """
+        f"""
         <section class="hero auth-hero">
             <div class="eyebrow">DentPilot AI &#36134;&#21495;&#31995;&#32479;</div>
-            <h1 class="hero-title">&#30331;&#24405; DentPilot AI</h1>
-            <p class="hero-copy">&#35831;&#20808;&#30331;&#24405;&#65292;&#31995;&#32479;&#20250;&#20445;&#23384;&#20320;&#30340;&#23398;&#20064;&#35760;&#24405;&#12289;&#21475;&#35797;&#35760;&#24405;&#21644;&#24369;&#28857;&#20998;&#26512;&#12290;</p>
+            <h1 class="hero-title">{t("login_title")}</h1>
+            <p class="hero-copy">{t("login_intro")}</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -409,12 +467,12 @@ def render_auth_gate() -> None:
 
     render_auth_debug()
 
-    login_tab, register_tab = st.tabs(["\u767b\u5f55", "\u6ce8\u518c"])
+    login_tab, register_tab = st.tabs([t("login"), t("register")])
     with login_tab:
         with st.form("dentpilot_login_form"):
-            email = st.text_input("\u90ae\u7bb1", key="login_email")
-            password = st.text_input("\u5bc6\u7801", type="password", key="login_password")
-            submitted = st.form_submit_button("\u767b\u5f55", use_container_width=True)
+            email = st.text_input(t("email"), key="login_email")
+            password = st.text_input(t("password"), type="password", key="login_password")
+            submitted = st.form_submit_button(t("login"), use_container_width=True)
         if submitted:
             try:
                 data = sign_in_with_email(email.strip(), password)
@@ -428,9 +486,9 @@ def render_auth_gate() -> None:
 
     with register_tab:
         with st.form("dentpilot_register_form"):
-            email = st.text_input("\u90ae\u7bb1", key="register_email")
-            password = st.text_input("\u5bc6\u7801", type="password", key="register_password")
-            submitted = st.form_submit_button("\u6ce8\u518c", use_container_width=True)
+            email = st.text_input(t("email"), key="register_email")
+            password = st.text_input(t("password"), type="password", key="register_password")
+            submitted = st.form_submit_button(t("register"), use_container_width=True)
         if submitted:
             try:
                 data = sign_up_with_email(email.strip(), password)
@@ -448,9 +506,9 @@ def render_auth_gate() -> None:
 def render_sidebar_account() -> None:
     user = get_current_user() or {}
     email = user.get("email") or "\u5f53\u524d\u7528\u6237"
-    st.markdown("### \u5f53\u524d\u7528\u6237")
+    st.markdown(f"### {t('current_user')}")
     st.caption(str(email))
-    if st.button("\u9000\u51fa\u767b\u5f55", use_container_width=True):
+    if st.button(t("logout"), use_container_width=True):
         sign_out_supabase()
         clear_selected_mode()
         clear_auth_session()
@@ -1191,6 +1249,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+init_ui_language()
+
 
 st.markdown(
     """
@@ -1786,12 +1846,12 @@ def render_oral_exam_mode(default_text: str):
     if not bank_available:
         st.warning("未找到学校题库，请先添加 data/school_question_bank.json。")
 
-    selected_mode = st.selectbox("笔试模式", WRITTEN_MODES, index=WRITTEN_MODES.index(st.session_state["oral_mode"]))
-    selected_type = st.selectbox("题型", WRITTEN_QUESTION_TYPES, index=WRITTEN_QUESTION_TYPES.index(st.session_state["oral_question_type"]))
+    selected_mode = st.selectbox(t("written_exam_mode_label"), WRITTEN_MODES, index=WRITTEN_MODES.index(st.session_state["oral_mode"]))
+    selected_type = st.selectbox(t("question_type"), WRITTEN_QUESTION_TYPES, index=WRITTEN_QUESTION_TYPES.index(st.session_state["oral_question_type"]))
 
     oral_default_text = st.session_state.get("last_course_text", default_text)
     oral_course_text = st.text_area(
-        "课程内容",
+        t("course_content"),
         value=oral_default_text,
         height=200,
         placeholder="粘贴课程内容（英文）或课堂提要...",
@@ -1802,16 +1862,16 @@ def render_oral_exam_mode(default_text: str):
     control_col_1, control_col_2, control_col_3 = st.columns(3)
     with control_col_1:
         oral_subject = st.selectbox(
-            "科目",
+            "Subject" if get_ui_lang() == "en" else "科目",
             ["Dentistry", "Anatomy", "Pathology", "Pharmacology", "Endodontics", "Periodontology", "Oral Surgery"],
             index=0,
         )
     with control_col_2:
-        oral_difficulty = st.selectbox("难度", ["easy", "medium", "hard"], index=1)
+        oral_difficulty = st.selectbox(t("difficulty"), ["easy", "medium", "hard"], index=1)
     with control_col_3:
         default_count = 5 if selected_mode == "考前模拟" else 1
         oral_question_count = st.number_input(
-            "题目数量",
+            t("question_count"),
             min_value=1,
             max_value=10,
             value=default_count,
@@ -1819,7 +1879,7 @@ def render_oral_exam_mode(default_text: str):
         )
 
     exam_topic = st.text_input(
-        "主题",
+        t("topic"),
         value=st.session_state.get("oral_exam_topic", ""),
         placeholder="例如：Dental caries",
         key="oral_exam_topic",
@@ -1838,7 +1898,7 @@ def render_oral_exam_mode(default_text: str):
     if selected_mode == "错题强化" and not wrong_topics:
         st.info("你还没有错题记录，请先完成日常练习或考前模拟。")
 
-    if st.button("生成笔试题", type="primary", use_container_width=True):
+    if st.button(t("generate_written_question"), type="primary", use_container_width=True):
         if not oral_course_text.strip():
             st.error("请先填写课程内容。")
         elif selected_mode == "错题强化" and not wrong_topics:
@@ -1934,7 +1994,7 @@ def render_oral_exam_mode(default_text: str):
             key="oral_student_answer",
         )
 
-        if st.button("提交答案", type="primary", use_container_width=True):
+        if st.button(t("submit_answer"), type="primary", use_container_width=True):
             if not student_answer.strip():
                 st.error("请先输入你的答案。")
             else:
@@ -2007,7 +2067,7 @@ def render_oral_exam_mode(default_text: str):
         completed = len(st.session_state.get("oral_exam_rounds", []))
         target = st.session_state.get("oral_exam_rounds_target", 1)
         if completed < target:
-            if st.button("再练一道类似题", use_container_width=True):
+            if st.button(t("practice_similar"), use_container_width=True):
                 st.session_state["oral_exam_result"] = None
                 st.session_state["oral_question_data"] = None
                 st.session_state["reset_oral_student_answer"] = True
@@ -2033,7 +2093,7 @@ def render_oral_exam_mode(default_text: str):
                 st.markdown(f"**我的答案：** {attempt.get('answer', '')}")
                 st.markdown(f"**反馈：** {result.get('chinese_feedback', '')}")
 
-    st.markdown("### 历史笔试记录")
+    st.markdown(f"### {t('recent_written_records')}")
     if st.session_state.get("oral_exam_history_error"):
         st.error(f"读取笔试记录失败：{st.session_state['oral_exam_history_error']}")
     history = st.session_state.get("oral_exam_history", [])
@@ -2059,7 +2119,7 @@ def render_oral_exam_mode(default_text: str):
         if is_wrong:
             wrong_records.append(attempt)
 
-    st.markdown("### 错题本")
+    st.markdown(f"### {t('wrong_question_notebook')}")
     if not wrong_records:
         st.info("暂时没有错题记录。完成日常练习或考前模拟后，低分题和缺失要点会出现在这里。")
     else:
@@ -2078,7 +2138,7 @@ def render_oral_exam_mode(default_text: str):
                     st.markdown("**缺失要点：**")
                     for point in missing_points[:5]:
                         st.markdown(f"- {point}")
-                if st.button("再练一道类似题", key=f"retry_written_{index}_{attempt.get('id', '')}"):
+                if st.button(t("practice_similar"), key=f"retry_written_{index}_{attempt.get('id', '')}"):
                     st.session_state["oral_exam_topic"] = topic_label
                     st.session_state["oral_mode"] = "错题强化"
                     st.session_state["oral_question_data"] = None
@@ -2143,10 +2203,10 @@ def render_clinical_case_mode(default_text: str):
     st.session_state.setdefault("clinical_case_history", [])
 
     st.markdown(
-        """
+        f"""
         <section class="hero">
-            <div class="eyebrow">AI 临床病例训练</div>
-            <h1 class="hero-title">Clinical Case Training</h1>
+            <div class="eyebrow">{t("clinical_case_training")}</div>
+            <h1 class="hero-title">{t("clinical_case_training")}</h1>
             <p class="hero-subtitle">根据课程内容生成牙科/医学临床病例，训练诊断、证据、鉴别诊断、检查、治疗计划和患者沟通。</p>
             <p class="hero-copy">完成病例训练后，系统会保存记录并用于后续弱点分析。</p>
         </section>
@@ -2155,7 +2215,7 @@ def render_clinical_case_mode(default_text: str):
     )
 
     st.markdown('<div class="input-panel">', unsafe_allow_html=True)
-    st.markdown('<div class="section-label">病例材料</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-label">{t("case_materials")}</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-copy">粘贴英文课程内容，系统会生成一个虚构但贴近课程重点的临床病例。</div>',
         unsafe_allow_html=True,
@@ -2163,7 +2223,7 @@ def render_clinical_case_mode(default_text: str):
 
     case_default_text = st.session_state.get("last_course_text", default_text)
     case_course_text = st.text_area(
-        "Course Text",
+        t("course_content"),
         value=case_default_text,
         height=220,
         placeholder="Paste your English dental or medical course text here...",
@@ -2185,7 +2245,7 @@ def render_clinical_case_mode(default_text: str):
             key="clinical_case_difficulty",
         )
 
-    if st.button("Generate Clinical Case", type="primary", use_container_width=True):
+    if st.button(t("generate_case"), type="primary", use_container_width=True):
         if not case_course_text.strip():
             st.error("请先粘贴课件内容。")
         else:
@@ -2209,7 +2269,7 @@ def render_clinical_case_mode(default_text: str):
 
     case_data = st.session_state.get("clinical_case_data")
     if case_data:
-        st.markdown("### Clinical Case")
+        st.markdown(f"### {t('case_materials')}")
         st.subheader(case_data.get("case_title", "Clinical Case"))
 
         case_col_1, case_col_2 = st.columns(2)
@@ -2241,7 +2301,7 @@ def render_clinical_case_mode(default_text: str):
                 st.markdown(f"- {item}")
 
         student_answer = st.text_area(
-            "Your Clinical Reasoning Answer",
+            t("my_analysis"),
             height=220,
             placeholder=(
                 "Answer in English. You can organize it as: diagnosis, evidence, "
@@ -2327,12 +2387,12 @@ def render_weakness_analysis_mode():
     combined_exam_history = [*oral_history, *realtime_oral_history]
 
     st.markdown(
-        """
+        f"""
         <section class="hero">
-            <div class="eyebrow">AI 弱点分析</div>
-            <h1 class="hero-title">Weakness Analysis</h1>
-            <p class="hero-subtitle">根据笔试、口试和临床病例训练记录，找出强项、弱点和可能原因，并生成 3 天复习计划。</p>
-            <p class="hero-copy">完成训练后，系统会分析你的薄弱知识点，并生成个性化复习计划。</p>
+            <div class="eyebrow">{t("weakness_analysis")}</div>
+            <h1 class="hero-title">{t("weakness_analysis")}</h1>
+            <p class="hero-subtitle">{"Analyze written exam, oral exam, and clinical case records to identify strengths, weak points, and next practice suggestions." if get_ui_lang() == "en" else "根据笔试、口试和临床病例训练记录，找出强项、弱点和可能原因，并生成 3 天复习计划。"}</p>
+            <p class="hero-copy">{"The system will summarize your weaknesses after practice." if get_ui_lang() == "en" else "完成训练后，系统会分析你的薄弱知识点，并生成个性化复习计划。"}</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -2342,10 +2402,10 @@ def render_weakness_analysis_mode():
     st.markdown('<div class="section-label">练习记录</div>', unsafe_allow_html=True)
 
     metric_col_1, metric_col_2, metric_col_3, metric_col_4 = st.columns(4)
-    metric_col_1.metric("Written Exam Attempts", len(oral_history))
-    metric_col_2.metric("Clinical Case Attempts", len(clinical_history))
-    metric_col_3.metric("Oral Exam Attempts", len(realtime_oral_history))
-    metric_col_4.metric("Study Packs", len(study_pack_records))
+    metric_col_1.metric("Written Exam Attempts" if get_ui_lang() == "en" else "笔试记录", len(oral_history))
+    metric_col_2.metric("Clinical Case Attempts" if get_ui_lang() == "en" else "病例记录", len(clinical_history))
+    metric_col_3.metric("Oral Exam Attempts" if get_ui_lang() == "en" else "口试记录", len(realtime_oral_history))
+    metric_col_4.metric("Study Packs" if get_ui_lang() == "en" else "复习包", len(study_pack_records))
 
     if not combined_exam_history and not clinical_history:
         st.info("请先完成至少 1 次口试或笔试后再分析。")
@@ -2429,38 +2489,44 @@ def render_weakness_analysis_mode():
 
 
 with st.sidebar:
+    render_ui_language_selector()
+    st.markdown("---")
     render_sidebar_account()
     render_admin_dashboard()
     st.markdown("## DentPilot AI")
-    st.caption("面向中国留学生的英授牙科/医学学习助手")
+    st.caption(
+        "AI Study Assistant for English-Taught Dental/Medical Students"
+        if get_ui_lang() == "en"
+        else "面向中国留学生的英授牙科/医学学习助手"
+    )
     st.markdown("---")
 
     mode_options = ["Study Pack", "AI Written Exam", "Clinical Case", "Weakness Analysis", "Realtime Oral Exam"]
     selected_mode_key = load_selected_mode()
     selected_mode_label = ALLOWED_MODE_KEYS.get(selected_mode_key, "Study Pack")
     mode = st.radio(
-        "学习模式",
+        t("study_mode"),
         mode_options,
         index=mode_options.index(selected_mode_label) if selected_mode_label in mode_options else 0,
         format_func={
-            "Study Pack": "Study Pack / 学习包",
-            "AI Written Exam": "AI Written Exam / 笔试训练",
-            "Clinical Case": "Clinical Case / 临床病例",
-            "Weakness Analysis": "Weakness Analysis / 弱项分析",
-            "Realtime Oral Exam": "Realtime Oral Exam / 实时口试",
+            "Study Pack": t("study_pack_mode"),
+            "AI Written Exam": t("written_exam_mode"),
+            "Clinical Case": t("clinical_case_mode"),
+            "Weakness Analysis": t("weakness_analysis_mode"),
+            "Realtime Oral Exam": t("realtime_oral_exam_mode"),
         }.get,
     )
     save_selected_mode(MODE_LABEL_TO_KEY.get(mode, "study_pack"))
 
     mode_descriptions = {
-        "Study Pack": "上传课程材料，自动生成复习包、Quiz 和 Anki 卡片。",
-        "AI Written Exam": "按模式/题型生成学校风格写作题，并给出详细评分与错题反馈。",
-        "Clinical Case": "基于案例的口腔临床诊断与治疗问答训练。",
-        "Weakness Analysis": "基于历史记录分析薄弱环节，给出短期训练建议。",
-        "Realtime Oral Exam": "实时口语练习与对话反馈（独立应用会话入口）。",
+        "Study Pack": "Upload course materials and generate study packs, quizzes, and Anki cards." if get_ui_lang() == "en" else "上传课程材料，自动生成复习包、Quiz 和 Anki 卡片。",
+        "AI Written Exam": "Generate school-style written exam questions with scoring and feedback." if get_ui_lang() == "en" else "按模式/题型生成学校风格写作题，并给出详细评分与错题反馈。",
+        "Clinical Case": "Practice clinical diagnosis and treatment planning with case questions." if get_ui_lang() == "en" else "基于案例的口腔临床诊断与治疗问答训练。",
+        "Weakness Analysis": "Analyze practice history and generate short-term revision suggestions." if get_ui_lang() == "en" else "基于历史记录分析薄弱环节，给出短期训练建议。",
+        "Realtime Oral Exam": "Open the standalone realtime oral exam room." if get_ui_lang() == "en" else "实时口语练习与对话反馈（独立应用会话入口）。",
     }
 
-    st.markdown("### 当前模式")
+    st.markdown("### Current Mode" if get_ui_lang() == "en" else "### 当前模式")
     st.write(mode_descriptions.get(mode, "DentPilot AI 功能模块"))
 
     if mode != "Realtime Oral Exam":
@@ -2488,8 +2554,8 @@ if mode == "Weakness Analysis":
     st.stop()
 
 if mode == "Realtime Oral Exam":
-    render_realtime_oral_exam_page()
-    st.markdown("### 最近实时口试记录")
+    render_realtime_oral_exam_page(get_ui_lang())
+    st.markdown("### Recent Realtime Oral Exam Records" if get_ui_lang() == "en" else "### 最近实时口试记录")
     if st.session_state.get("realtime_oral_history_error"):
         st.error(f"读取实时口试记录失败：{st.session_state['realtime_oral_history_error']}")
     try:
@@ -2567,9 +2633,9 @@ st.markdown(
 
 
 st.markdown('<div class="input-panel">', unsafe_allow_html=True)
-st.markdown('<div class="section-label">生成复习包</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="section-label">{t("study_pack_upload")}</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-copy">上传 PDF / Word(docx) / TXT，或粘贴课程讲义、教材章节、PPT 文本。</div>',
+    f'<div class="section-copy">{t("study_pack_support")}</div>',
     unsafe_allow_html=True,
 )
 
@@ -2626,7 +2692,7 @@ if uploaded_course_file is not None:
         st.error(f"无法提取这个课程文档的文本：{exc}")
 
 text = st.text_area(
-    "英文牙科 / 医学课程内容",
+    t("course_content"),
     value=uploaded_text or sample,
     height=220,
     placeholder="在这里粘贴英文牙科 lecture、PPT、Word、TXT 或教材内容...",
@@ -2669,13 +2735,13 @@ expected_section_count = st.number_input(
 
 col_a, col_b = st.columns([1.25, 3.75], vertical_alignment="center")
 with col_a:
-    generate = st.button("生成复习包", type="primary", use_container_width=True)
+    generate = st.button(t("generate_study_pack"), type="primary", use_container_width=True)
 with col_b:
     st.caption("建议先用一小段 lecture/PPT 文本测试，结果会更清晰。")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown("### 最近复习包记录")
+st.markdown(f"### {t('recent_study_pack_records')}")
 if st.session_state.get("study_pack_records_error"):
     st.error(f"读取复习包记录失败：{st.session_state['study_pack_records_error']}")
 recent_study_pack_records = st.session_state.get("study_pack_records", [])
@@ -2757,7 +2823,7 @@ if generate:
 
     if pdf_bytes:
         st.download_button(
-            label="下载 PDF 复习包",
+            label=t("download_pdf_pack"),
             data=pdf_bytes,
             file_name="dentpilot_study_pack.pdf",
             mime="application/pdf",
@@ -2767,7 +2833,7 @@ if generate:
         st.warning(f"PDF 下载失败时，可先下载 Markdown 版本。{pdf_error or ''}")
 
     st.download_button(
-        label="下载 Markdown 复习包",
+        label=t("download_md_pack"),
         data=markdown_bytes,
         file_name="dentpilot_study_pack.md",
         mime="text/markdown",
@@ -2892,7 +2958,7 @@ if generate:
         st.dataframe(df_cards, use_container_width=True)
 
         st.download_button(
-            label="下载 Anki CSV",
+            label=t("download_anki_csv"),
             data=st.session_state.get("anki_csv_bytes") or build_anki_csv_bytes(pack, subject),
             file_name="medstudy_anki_cards.csv",
             mime="text/csv",
@@ -2937,7 +3003,7 @@ else:
         st.markdown("### 已生成的下载文件")
         if cached_pdf_bytes:
             st.download_button(
-                label="下载 PDF 复习包",
+                label=t("download_pdf_pack"),
                 data=cached_pdf_bytes,
                 file_name="dentpilot_study_pack.pdf",
                 mime="application/pdf",
@@ -2945,7 +3011,7 @@ else:
             )
         if cached_md_bytes:
             st.download_button(
-                label="下载 Markdown 复习包",
+                label=t("download_md_pack"),
                 data=cached_md_bytes,
                 file_name="dentpilot_study_pack.md",
                 mime="text/markdown",
@@ -2953,7 +3019,7 @@ else:
             )
         if cached_anki_bytes:
             st.download_button(
-                label="下载 Anki CSV",
+                label=t("download_anki_csv"),
                 data=cached_anki_bytes,
                 file_name="medstudy_anki_cards.csv",
                 mime="text/csv",
