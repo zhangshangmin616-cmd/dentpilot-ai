@@ -230,6 +230,11 @@ def normalize_document_text(text: str) -> str:
     return text.strip()
 
 
+def split_text_into_sections(text: str) -> List[Dict[str, Any]]:
+    """Public helper used by Study Pack: split by detected questions/headings or chunk long text."""
+    return detect_exam_sections(text)
+
+
 def build_sections_from_markers(
     normalized: str,
     markers: List[re.Match],
@@ -297,11 +302,11 @@ def detect_exam_sections(text: str, expected_count: int | None = None) -> List[D
         ),
         (
             "inline_numbered_question",
-            re.compile(r"(?<![\w.])(?P<number>\d{1,3})[\.\)]\s+(?=[A-Z][A-Za-z0-9,;:'\"()/-])"),
+            re.compile(r"(?<![\w.])(?P<number>\d{1,3})[\.\)]\s+(?=\S)"),
         ),
         (
             "line_plain_number_question",
-            re.compile(r"(?m)^\s*(?P<number>\d{1,3})\s+(?=[A-Z][A-Za-z0-9,;:'\"()/-])"),
+            re.compile(r"(?m)^\s*(?P<number>\d{1,3})\s+(?=\S)"),
         ),
         (
             "named_heading",
@@ -312,7 +317,7 @@ def detect_exam_sections(text: str, expected_count: int | None = None) -> List[D
         (
             "inline_named_heading",
             re.compile(
-                r"(?i)(?<!\w)(?:Question|Q|Topic|Chapter|Section)\s+(?P<number>\d{1,3})[:\.\)]?\s+(?=[A-Z][A-Za-z0-9,;:'\"()/-])"
+                r"(?i)(?<!\w)(?:Question|Q|Topic|Chapter|Section)\s+(?P<number>\d{1,3})[:\.\)]?\s+(?=\S)"
             ),
         ),
     ]
@@ -372,22 +377,27 @@ def detect_exam_sections(text: str, expected_count: int | None = None) -> List[D
             })
         return sections
 
-    # 没有明确题号时，按长度切块，至少保证后半部分不会消失。
-    chunk_size = 4500
-    chunks = []
+    # 没有明确题号时，按长度切块，并保留 overlap，至少保证后半部分不会消失。
+    chunk_size = 8500
+    overlap = 500
+    chunks: List[str] = []
     paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
     current = ""
     for paragraph in paragraphs:
-        if current and len(current) + len(paragraph) > chunk_size:
+        if current and len(current) + len(paragraph) + 2 > chunk_size:
             chunks.append(current.strip())
-            current = paragraph
+            tail = current[-overlap:] if overlap and len(current) > overlap else current
+            current = f"{tail}\n\n{paragraph}".strip()
         else:
             current = f"{current}\n\n{paragraph}".strip()
     if current:
         chunks.append(current.strip())
 
     if not chunks:
-        chunks = [normalized[:chunk_size]]
+        for start in range(0, len(normalized), max(1, chunk_size - overlap)):
+            chunk = normalized[start:start + chunk_size].strip()
+            if chunk:
+                chunks.append(chunk)
 
     return [
         {
@@ -406,25 +416,25 @@ def depth_settings(depth: str) -> Dict[str, Any]:
         "快速总结": {
             "mode_name": "精简版",
             "detail": "concise preview, but still one module per detected section",
-            "max_section_chars": 3500,
+            "max_section_chars": 6000,
             "max_tokens": 1800,
         },
         "标准复习包": {
             "mode_name": "标准版",
             "detail": "balanced exam-focused notes for every section",
-            "max_section_chars": 5500,
+            "max_section_chars": 8500,
             "max_tokens": 2600,
         },
         "考前冲刺包": {
             "mode_name": "考前冲刺版",
             "detail": "high-yield points, common mistakes, oral exam framing",
-            "max_section_chars": 5000,
+            "max_section_chars": 8000,
             "max_tokens": 2400,
         },
         "详细逐题版": {
             "mode_name": "详细版",
             "detail": "cover as much material as possible for each question or section",
-            "max_section_chars": 8000,
+            "max_section_chars": 10000,
             "max_tokens": 3600,
         },
     }
@@ -526,7 +536,18 @@ def build_section_prompt(
     matched_terms: List[Dict[str, str]],
 ) -> str:
     settings = depth_settings(depth)
-    section_text = section.get("text", "")[:settings["max_section_chars"]]
+    raw_section_text = str(section.get("text", ""))
+    max_chars = int(settings["max_section_chars"])
+    if len(raw_section_text) > max_chars:
+        head_chars = max_chars - 1800
+        tail_chars = 1500
+        section_text = (
+            raw_section_text[:head_chars]
+            + "\n\n[Middle omitted only because this section is very long; preserve all detected sections.]\n\n"
+            + raw_section_text[-tail_chars:]
+        )
+    else:
+        section_text = raw_section_text
     schema_example = {
         "title": section.get("title", ""),
         "chinese_core_explanation": "中文核心讲解，覆盖定义、机制、临床意义、考试问法。",

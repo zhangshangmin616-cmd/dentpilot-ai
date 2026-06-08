@@ -953,15 +953,33 @@ def load_persistent_learning_records() -> None:
         st.session_state["realtime_oral_history_error"] = str(exc)
 
 
-def extract_pdf_text(uploaded_file) -> tuple[str, int]:
+def extract_pdf_text(uploaded_file) -> tuple[str, dict]:
     uploaded_file.seek(0)
     pdf = PdfReader(uploaded_file)
-    pages = []
-    for page in pdf.pages:
-        page_text = page.extract_text() or ""
+    pages: list[str] = []
+    failed_pages: list[int] = []
+    empty_pages: list[int] = []
+    for page_index, page in enumerate(pdf.pages, start=1):
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+            failed_pages.append(page_index)
         if page_text.strip():
-            pages.append(page_text.strip())
-    return "\n\n".join(pages), len(pdf.pages)
+            pages.append(f"\n\n--- Page {page_index} ---\n{page_text.strip()}")
+        elif page_index not in failed_pages:
+            empty_pages.append(page_index)
+    text = "\n".join(pages).strip()
+    report = {
+        "filename": getattr(uploaded_file, "name", "uploaded.pdf"),
+        "total_pages": len(pdf.pages),
+        "successful_pages": len(pdf.pages) - len(failed_pages) - len(empty_pages),
+        "failed_pages": failed_pages,
+        "empty_pages": empty_pages,
+        "char_count": len(text),
+        "preview": text[:1000],
+    }
+    return text, report
 
 
 def extract_docx_text(uploaded_file) -> tuple[str, int]:
@@ -2725,13 +2743,14 @@ uploaded_course_file = st.file_uploader(
 )
 
 uploaded_text = ""
+extraction_report = None
 if uploaded_course_file is not None:
     try:
         file_suffix = Path(uploaded_course_file.name).suffix.lower()
         if file_suffix == ".pdf":
             with st.spinner("Extracting text from PDF..."):
-                uploaded_text, page_count = extract_pdf_text(uploaded_course_file)
-            source_label = f"PDF 的 {page_count} 页"
+                uploaded_text, extraction_report = extract_pdf_text(uploaded_course_file)
+            source_label = f"PDF 的 {extraction_report.get('total_pages', 0)} 页"
         elif file_suffix == ".docx":
             with st.spinner("Extracting text from Word document..."):
                 uploaded_text, paragraph_count = extract_docx_text(uploaded_course_file)
@@ -2745,8 +2764,35 @@ if uploaded_course_file is not None:
             st.warning("暂时只支持 PDF、Word(docx) 和 TXT 文件。")
         if uploaded_text.strip():
             st.success(f"已从 {source_label} 中提取文本。生成前你仍然可以编辑。")
+            if extraction_report:
+                with st.expander("PDF 提取报告", expanded=True):
+                    st.markdown(f"**文件名：** {extraction_report.get('filename', '')}")
+                    st.markdown(f"**总页数：** {extraction_report.get('total_pages', 0)}")
+                    st.markdown(f"**成功提取页数：** {extraction_report.get('successful_pages', 0)}")
+                    st.markdown(f"**提取字符数：** {extraction_report.get('char_count', 0)}")
+                    if extraction_report.get("failed_pages"):
+                        st.warning(f"提取失败页：{extraction_report.get('failed_pages')}")
+                    if extraction_report.get("empty_pages"):
+                        st.caption(f"空白或无可选中文本页：{extraction_report.get('empty_pages')}")
+                    st.text_area(
+                        "前 1000 字预览",
+                        value=str(extraction_report.get("preview", "")),
+                        height=220,
+                        disabled=True,
+                    )
+                    total_pages = max(1, int(extraction_report.get("total_pages", 1)))
+                    char_count = int(extraction_report.get("char_count", 0))
+                    if char_count < 800 or char_count / total_pages < 120:
+                        st.warning("PDF 可能是扫描版或图片型 PDF，当前无法完整识别，请使用可复制文字的 PDF 或复制粘贴文本。")
         elif file_suffix == ".pdf":
             st.warning("没有从这个 PDF 中提取到可选中文本。如果这是扫描版 PDF，需要先做 OCR。")
+            if extraction_report:
+                with st.expander("PDF 提取报告", expanded=True):
+                    st.markdown(f"**文件名：** {extraction_report.get('filename', '')}")
+                    st.markdown(f"**总页数：** {extraction_report.get('total_pages', 0)}")
+                    st.markdown(f"**成功提取页数：** {extraction_report.get('successful_pages', 0)}")
+                    st.markdown(f"**提取字符数：** {extraction_report.get('char_count', 0)}")
+                    st.warning("PDF 可能是扫描版或图片型 PDF，当前无法完整识别，请使用可复制文字的 PDF 或复制粘贴文本。")
         elif file_suffix == ".docx":
             st.warning("没有从这个 Word 文档中提取到文本。请确认文档不是空白或受保护文件。")
         elif file_suffix == ".txt":
