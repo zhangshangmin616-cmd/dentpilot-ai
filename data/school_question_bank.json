@@ -1,0 +1,38 @@
+[
+  {
+    "id": "template_001",
+    "enabled": false,
+    "subject": "Example Subject",
+    "topic": "Example Topic",
+    "aliases": [
+      "example alias"
+    ],
+    "category": "general",
+    "difficulty": "medium",
+    "source_original_questions": [],
+    "merged_question": "Example school question goes here.",
+    "answer_template": "Example answer template goes here.",
+    "must_know": [
+      "Key point 1",
+      "Key point 2"
+    ],
+    "common_mistakes": [
+      "Common mistake 1",
+      "Common mistake 2"
+    ],
+    "scoring_rubric": {
+      "definition": 20,
+      "key_points": 40,
+      "clinical_relevance": 20,
+      "exam_structure": 20
+    },
+    "follow_up_questions": [
+      "Example follow-up question 1",
+      "Example follow-up question 2"
+    ],
+    "tags": [
+      "example",
+      "template"
+    ]
+  }
+]

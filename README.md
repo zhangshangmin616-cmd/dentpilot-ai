@@ -45,6 +45,29 @@ Use the Supabase Publishable key only. Do not add the service_role key to Stream
 
 The main Streamlit app keeps users logged in with browser `localStorage` containing only the Supabase `access_token`, `refresh_token`, expiry time, and basic user id/email. It never stores passwords or service role keys. Logout clears both Streamlit session state and the saved browser auth item.
 
+## School Question Bank
+
+The main Streamlit app reads school-style written exam material from:
+
+```text
+data/school_question_bank.json
+```
+
+The file must be valid JSON and should contain an array of question objects. Each item should include:
+
+- `subject`
+- `topic`
+- `merged_question`
+- `must_know`
+- `common_mistakes`
+- `scoring_rubric`
+- `follow_up_questions`
+- `tags`
+
+Set `enabled: true` when a question is ready to be used. Items with `enabled: false` are treated as templates or drafts and are ignored by the question bank loader.
+
+The default file contains one disabled template object only. Replace or copy that template when adding real school questions later.
+
 ## Per-User Learning Memory
 
 Run `supabase/schema.sql` in the Supabase SQL Editor before public testing. It creates:

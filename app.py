@@ -39,6 +39,7 @@ from oral_exam import (
 from question_bank_engine import (
     find_relevant_school_questions,
     generate_written_question_from_bank,
+    get_question_bank_status,
     infer_question_focus,
     load_school_question_bank,
 )
@@ -1875,6 +1876,13 @@ def render_oral_exam_mode(default_text: str):
 
     if not bank_available:
         st.warning("School question bank not found. Please add data/school_question_bank.json." if get_ui_lang() == "en" else "未找到学校题库，请先添加 data/school_question_bank.json。")
+
+    bank_status = get_question_bank_status()
+    with st.expander("调试：学校题库状态", expanded=False):
+        st.markdown(f"**题库路径：** `{bank_status.get('path', 'data/school_question_bank.json')}`")
+        st.markdown(f"**是否存在：** {'是' if bank_status.get('exists') else '否'}")
+        st.markdown(f"**已启用题目数量：** {bank_status.get('count', 0)}")
+        st.markdown(f"**状态说明：** {bank_status.get('message', '')}")
 
     selected_mode = st.selectbox(
         t("written_exam_mode_label"),

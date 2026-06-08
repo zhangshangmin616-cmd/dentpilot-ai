@@ -90,6 +90,7 @@ def _ensure_dict(value: Any) -> dict[str, float]:
 def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(item.get("id", "")).strip(),
+        "enabled": bool(item.get("enabled", True)),
         "subject": str(item.get("subject", "")).strip(),
         "topic": str(item.get("topic", "")).strip(),
         "aliases": _ensure_list(item.get("aliases")),
@@ -115,7 +116,61 @@ def load_school_question_bank() -> list[dict[str, Any]]:
         return []
     if not isinstance(raw, list):
         return []
-    return [_normalize_item(item) for item in raw if isinstance(item, dict)]
+    return [
+        _normalize_item(item)
+        for item in raw
+        if isinstance(item, dict) and item.get("enabled", True) is not False
+    ]
+
+
+def get_question_bank_status() -> dict[str, Any]:
+    relative_path = "data/school_question_bank.json"
+    if not BANK_PATH.exists():
+        return {
+            "exists": False,
+            "count": 0,
+            "path": relative_path,
+            "message": "学校题库文件不存在。请创建 data/school_question_bank.json。",
+        }
+
+    try:
+        raw = json.loads(BANK_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "exists": True,
+            "count": 0,
+            "path": relative_path,
+            "message": f"学校题库 JSON 无法解析：{exc}",
+        }
+
+    if not isinstance(raw, list):
+        return {
+            "exists": True,
+            "count": 0,
+            "path": relative_path,
+            "message": "学校题库 JSON 必须是数组格式。",
+        }
+
+    enabled_count = sum(
+        1 for item in raw if isinstance(item, dict) and item.get("enabled", True) is not False
+    )
+    disabled_count = sum(
+        1 for item in raw if isinstance(item, dict) and item.get("enabled", True) is False
+    )
+    if enabled_count == 0:
+        return {
+            "exists": True,
+            "count": 0,
+            "path": relative_path,
+            "message": f"题库文件已存在，但当前没有启用题目。已忽略 {disabled_count} 条 disabled 模板或草稿。",
+        }
+
+    return {
+        "exists": True,
+        "count": enabled_count,
+        "path": relative_path,
+        "message": f"学校题库可用，已启用 {enabled_count} 条题目。",
+    }
 
 
 def _item_search_text(item: dict[str, Any]) -> str:
