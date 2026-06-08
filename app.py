@@ -100,7 +100,6 @@ def init_ui_language() -> None:
         if query_lang in {"zh", "en"}:
             st.session_state["ui_lang"] = query_lang
             st.session_state["ui_lang_loaded"] = True
-            save_ui_lang_to_local_storage(query_lang)
             return
     except Exception:
         pass
@@ -324,11 +323,14 @@ def load_auth_session_from_local_storage() -> dict | None:
     )
 
     if raw_value is None:
+        attempts = int(st.session_state.get("auth_local_storage_attempts", 0)) + 1
+        st.session_state["auth_local_storage_attempts"] = attempts
         st.session_state["auth_local_storage_pending"] = True
         record_auth_debug(local_storage_exists=False, restore_attempted=False)
         return None
 
     st.session_state["auth_local_storage_pending"] = False
+    st.session_state["auth_local_storage_attempts"] = 0
     if raw_value == LOCAL_STORAGE_EMPTY:
         record_auth_debug(local_storage_exists=False, restore_attempted=True)
         return None
@@ -409,6 +411,7 @@ def clear_auth_session() -> None:
     keys_to_clear = (
         *AUTH_SESSION_KEYS,
         "auth_local_storage_pending",
+        "auth_local_storage_attempts",
         "auth_local_storage_recently_saved",
         "dentpilot_auth_restored_message",
         "dentpilot_session_expired_message",
@@ -459,7 +462,15 @@ def render_auth_gate() -> None:
     if st.session_state.pop("auth_local_storage_pending", False):
         st.info(t("restoring_login"))
         render_auth_debug()
+        if int(st.session_state.get("auth_local_storage_attempts", 0)) <= 2:
+            time.sleep(0.25)
+            st.rerun()
         if not st.button(t("continue_login"), use_container_width=True):
+            st.caption(
+                "If this screen does not move forward, click Continue Login or refresh once."
+                if get_ui_lang() == "en"
+                else "如果页面没有自动继续，请点击继续登录或刷新一次。"
+            )
             st.stop()
 
     st.markdown(
@@ -491,8 +502,8 @@ def render_auth_gate() -> None:
                 user = save_auth_session(data)
                 if not user:
                     raise RuntimeError("Supabase \u672a\u8fd4\u56de\u53ef\u4fdd\u5b58\u7684\u767b\u5f55\u4f1a\u8bdd\u3002")
-                st.success("\u767b\u5f55\u6210\u529f")
-                return
+                st.success("Login successful." if get_ui_lang() == "en" else "\u767b\u5f55\u6210\u529f")
+                st.rerun()
             except Exception as exc:
                 st.error(f"\u767b\u5f55\u5931\u8d25\uff1a{exc}")
 
@@ -506,9 +517,13 @@ def render_auth_gate() -> None:
                 data = sign_up_with_email(email.strip(), password)
                 user = save_auth_session(data)
                 if user:
-                    st.success("\u6ce8\u518c\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002")
-                    return
-                st.success("\u6ce8\u518c\u6210\u529f\u3002\u5982\u679c Supabase \u5f00\u542f\u90ae\u7bb1\u786e\u8ba4\uff0c\u8bf7\u5148\u67e5\u6536\u90ae\u4ef6\uff0c\u7136\u540e\u518d\u767b\u5f55\u3002")
+                    st.success("Registration successful. You are now logged in." if get_ui_lang() == "en" else "\u6ce8\u518c\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u767b\u5f55\u3002")
+                    st.rerun()
+                st.success(
+                    "Registration successful. If email confirmation is enabled, check your email first, then log in."
+                    if get_ui_lang() == "en"
+                    else "\u6ce8\u518c\u6210\u529f\u3002\u5982\u679c Supabase \u5f00\u542f\u90ae\u7bb1\u786e\u8ba4\uff0c\u8bf7\u5148\u67e5\u6536\u90ae\u4ef6\uff0c\u7136\u540e\u518d\u767b\u5f55\u3002"
+                )
             except Exception as exc:
                 st.error(f"\u6ce8\u518c\u5931\u8d25\uff1a{exc}")
 
