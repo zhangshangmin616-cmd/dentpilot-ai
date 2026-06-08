@@ -14,6 +14,10 @@ from streamlit_js_eval import streamlit_js_eval
 from docx import Document
 from dotenv import load_dotenv
 from pypdf import PdfReader
+try:
+    from pptx import Presentation
+except Exception:
+    Presentation = None
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -996,6 +1000,48 @@ def extract_docx_text(uploaded_file) -> tuple[str, int]:
             if cells:
                 blocks.append(" | ".join(cells))
     return "\n\n".join(blocks), len(document.paragraphs)
+
+
+def extract_pptx_text(uploaded_file) -> tuple[str, dict]:
+    if Presentation is None:
+        raise RuntimeError("当前环境缺少 python-pptx，无法解析 PowerPoint 文件。")
+    uploaded_file.seek(0)
+    presentation = Presentation(uploaded_file)
+    blocks: list[str] = []
+    slides_with_text = 0
+
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        slide_blocks: list[str] = []
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                text = "\n".join(
+                    paragraph.text.strip()
+                    for paragraph in shape.text_frame.paragraphs
+                    if paragraph.text.strip()
+                )
+                if text:
+                    slide_blocks.append(text)
+            if getattr(shape, "has_table", False):
+                rows = []
+                for row in shape.table.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if cells:
+                        rows.append(" | ".join(cells))
+                if rows:
+                    slide_blocks.append("\n".join(rows))
+        if slide_blocks:
+            slides_with_text += 1
+            blocks.append(f"\n\n--- Slide {slide_index} ---\n" + "\n\n".join(slide_blocks))
+
+    text = "\n".join(blocks).strip()
+    report = {
+        "filename": getattr(uploaded_file, "name", "uploaded.pptx"),
+        "total_slides": len(presentation.slides),
+        "successful_slides": slides_with_text,
+        "char_count": len(text),
+        "preview": text[:1000],
+    }
+    return text, report
 
 
 def extract_txt_text(uploaded_file) -> tuple[str, int]:
@@ -2738,7 +2784,7 @@ st.markdown(
 
 uploaded_course_file = st.file_uploader(
     t("upload_course_file"),
-    type=["pdf", "docx", "txt"],
+    type=["pdf", "docx", "pptx", "ppt", "txt"],
     help=t("upload_course_help"),
 )
 
@@ -2755,6 +2801,29 @@ if uploaded_course_file is not None:
             with st.spinner("Extracting text from Word document..."):
                 uploaded_text, paragraph_count = extract_docx_text(uploaded_course_file)
             source_label = f"Word 文档的 {paragraph_count} 个段落"
+        elif file_suffix == ".pptx":
+            with st.spinner("Extracting text from PowerPoint..."):
+                uploaded_text, ppt_report = extract_pptx_text(uploaded_course_file)
+            source_label = f"PowerPoint 的 {ppt_report.get('total_slides', 0)} 页幻灯片"
+            with st.expander("PowerPoint 提取报告", expanded=True):
+                st.markdown(f"**文件名：** {ppt_report.get('filename', '')}")
+                st.markdown(f"**总幻灯片数：** {ppt_report.get('total_slides', 0)}")
+                st.markdown(f"**成功提取幻灯片数：** {ppt_report.get('successful_slides', 0)}")
+                st.markdown(f"**提取字符数：** {ppt_report.get('char_count', 0)}")
+                st.text_area(
+                    "前 1000 字预览",
+                    value=str(ppt_report.get("preview", "")),
+                    height=220,
+                    disabled=True,
+                    key="pptx_extract_preview",
+                )
+                total_slides = max(1, int(ppt_report.get("total_slides", 1)))
+                char_count = int(ppt_report.get("char_count", 0))
+                if char_count < 500 or char_count / total_slides < 80:
+                    st.warning("PPT 可能主要是图片或扫描内容，当前只能读取可选中文本。请导出为可复制文字的 PPTX/PDF，或复制粘贴讲义文本。")
+        elif file_suffix == ".ppt":
+            source_label = "旧版 PowerPoint 文件"
+            st.warning("暂不支持直接解析旧版 .ppt 文件。请先另存为 .pptx 后再上传，或复制粘贴幻灯片文字。")
         elif file_suffix == ".txt":
             with st.spinner("Extracting text from TXT file..."):
                 uploaded_text, line_count = extract_txt_text(uploaded_course_file)
@@ -2795,6 +2864,8 @@ if uploaded_course_file is not None:
                     st.warning("PDF 可能是扫描版或图片型 PDF，当前无法完整识别，请使用可复制文字的 PDF 或复制粘贴文本。")
         elif file_suffix == ".docx":
             st.warning("没有从这个 Word 文档中提取到文本。请确认文档不是空白或受保护文件。")
+        elif file_suffix == ".pptx":
+            st.warning("没有从这个 PowerPoint 中提取到文本。请确认幻灯片不是纯图片，或复制粘贴文字内容。")
         elif file_suffix == ".txt":
             st.warning("没有从这个 TXT 文件中提取到文本。请确认文件不是空白。")
     except Exception as exc:

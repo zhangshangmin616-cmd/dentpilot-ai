@@ -3,7 +3,7 @@
 DentPilot AI is a Streamlit study-assistance app for Chinese students in English-taught dental and medical programs.
 
 Current features:
-- Study Pack generation with Chinese explanations, glossary, quiz, Anki CSV, and PDF export
+- Study Pack generation from PDF, Word, PowerPoint, or TXT with Chinese explanations, glossary, quiz, Anki CSV, and PDF export
 - Text-based AI Oral Exam
 - AI Clinical Case Training
 - Weakness Analysis
