@@ -163,6 +163,21 @@ def _normalize_grade(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _subject_focus_note(subject: str) -> str:
+    subject_key = (subject or "").strip().lower()
+    if subject_key == "orthodontics":
+        return (
+            "For Orthodontics, focus on malocclusion, occlusion, cephalometrics, "
+            "orthodontic diagnosis, appliances, tooth movement, retention, and relapse prevention."
+        )
+    if subject_key == "preventive dentistry":
+        return (
+            "For Preventive Dentistry, focus on caries prevention, fluoride, plaque control, "
+            "oral hygiene instruction, diet counseling, sealants, epidemiology, prevention programs, and patient education."
+        )
+    return ""
+
+
 def generate_clinical_case(course_text: str, subject: str, difficulty: str) -> Dict[str, Any]:
     course_text = (course_text or "").strip()
     if not course_text:
@@ -179,6 +194,9 @@ Create one realistic but fictional clinical case based on the course text.
 Do not include voice, audio, or speech tasks.
 
 Subject: {subject}
+Subject focus:
+{_subject_focus_note(subject) or "Use the selected subject and course text as the main clinical scope."}
+
 Difficulty: {difficulty}
 
 Course text:

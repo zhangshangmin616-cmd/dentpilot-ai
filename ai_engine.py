@@ -41,6 +41,21 @@ def find_terms(text: str) -> List[Dict[str, str]]:
     return hits
 
 
+def subject_focus_note(subject: str) -> str:
+    subject_key = (subject or "").strip().lower()
+    if subject_key == "orthodontics":
+        return (
+            "Orthodontics focus: malocclusion, occlusion, cephalometrics, orthodontic diagnosis, "
+            "appliances, tooth movement, biomechanics, retention, and relapse prevention."
+        )
+    if subject_key == "preventive dentistry":
+        return (
+            "Preventive Dentistry focus: caries prevention, fluoride, plaque control, oral hygiene, "
+            "diet counseling, sealants, epidemiology, risk assessment, and prevention programs."
+        )
+    return "Use the selected subject and course text as the main scope."
+
+
 def local_fallback_study_pack(text: str, subject: str, error_message: str = "") -> Dict[str, Any]:
     """
     如果 DeepSeek API Key 没配置、余额不足、网络失败，就返回本地备用版本。
@@ -169,6 +184,9 @@ def build_prompt(text: str, subject: str, matched_terms: List[Dict[str, str]]) -
 {subject}
 
 本地术语库已匹配到的参考术语：
+Subject focus:
+{subject_focus_note(subject)}
+
 {matched_terms_text}
 
 用户输入的英文课程内容：
@@ -607,6 +625,9 @@ Current generation depth:
 
 Subject:
 {subject}
+
+Subject focus:
+{subject_focus_note(subject)}
 
 Detected section/question:
 Question {section.get("number")}: {section.get("title")}

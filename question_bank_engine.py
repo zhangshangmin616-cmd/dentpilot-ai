@@ -38,6 +38,42 @@ FOCUS_KEYWORDS: dict[str, set[str]] = {
     "hygiene_infection_control": {"hygiene", "infection", "asepsis", "antisepsis", "disinfection", "sterilization"},
 }
 
+SUBJECT_FOCUS_HINTS: dict[str, dict[str, Any]] = {
+    "orthodontics": {
+        "keywords": {
+            "orthodontic", "orthodontics", "malocclusion", "occlusion", "cephalometric",
+            "cephalometrics", "diagnosis", "appliance", "bracket", "aligner", "tooth movement",
+            "retention", "retainer", "anchorage", "growth", "class i", "class ii", "class iii",
+            "口腔正畸", "正畸", "错颌", "咬合", "头影测量", "矫治器", "牙移动", "保持",
+        },
+        "focus": ["diagnosis_methods", "structure_function", "treatment_principles", "technique_methodology"],
+        "must_know": [
+            "Classify the malocclusion or occlusal problem",
+            "Explain orthodontic diagnosis, including clinical examination and cephalometric assessment when relevant",
+            "Describe the appliance or biomechanical principle used for tooth movement",
+            "Mention retention and relapse prevention",
+        ],
+        "tags": ["orthodontics", "malocclusion", "occlusion", "cephalometrics", "appliances", "tooth movement", "retention"],
+    },
+    "preventive dentistry": {
+        "keywords": {
+            "preventive dentistry", "prevention", "caries prevention", "fluoride", "plaque control",
+            "oral hygiene", "diet counseling", "sealant", "sealants", "epidemiology",
+            "prevention program", "risk assessment", "dmft", "dmfs", "community dentistry",
+            "口腔预防", "预防", "龋病预防", "氟化物", "菌斑控制", "口腔卫生", "饮食指导",
+            "窝沟封闭", "流行病学", "预防项目",
+        },
+        "focus": ["complications_prevention", "patient_communication", "hygiene_infection_control", "diagnosis_methods"],
+        "must_know": [
+            "Assess caries or oral disease risk before choosing prevention",
+            "Explain fluoride, plaque control, oral hygiene instruction, and diet counseling",
+            "Describe sealants or other preventive interventions when indicated",
+            "Connect prevention to epidemiology, community programs, or patient education",
+        ],
+        "tags": ["preventive dentistry", "caries prevention", "fluoride", "plaque control", "sealants", "epidemiology"],
+    },
+}
+
 
 def normalize_text(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
@@ -206,6 +242,8 @@ def find_relevant_school_questions(
     topic_norm = normalize_text(topic)
     subject_norm = normalize_text(subject)
     query_tokens = tokenize(topic) | tokenize(course_context)
+    subject_hint = SUBJECT_FOCUS_HINTS.get(subject_norm, {})
+    subject_keywords = {normalize_text(keyword) for keyword in subject_hint.get("keywords", set())}
     scored: list[dict[str, Any]] = []
 
     for item in bank:
@@ -235,6 +273,11 @@ def find_relevant_school_questions(
         if subject_norm and subject_norm == normalize_text(item.get("subject")):
             score += 10
             reasons.append("subject match")
+
+        subject_overlap = subject_keywords.intersection(item_tokens | query_tokens)
+        if subject_overlap:
+            score += min(18, 4 * len(subject_overlap))
+            reasons.append("subject focus match")
 
         tag_overlap = tags.intersection(query_tokens)
         if tag_overlap:
@@ -270,6 +313,7 @@ def infer_question_focus(item: dict[str, Any]) -> list[str]:
     text = normalize_text(_item_search_text(item))
     category = normalize_text(item.get("category"))
     topic_text = normalize_text(item.get("topic"))
+    subject_text = normalize_text(item.get("subject"))
     focus_scores: Counter[str] = Counter()
 
     for focus, keywords in FOCUS_KEYWORDS.items():
@@ -287,6 +331,10 @@ def infer_question_focus(item: dict[str, Any]) -> list[str]:
     }
     for focus in category_focus.get(category, []):
         focus_scores[focus] += 2
+
+    subject_hint = SUBJECT_FOCUS_HINTS.get(subject_text, {})
+    for focus in subject_hint.get("focus", []):
+        focus_scores[focus] += 3
 
     if any(word in topic_text for word in ["instrument", "equipment", "handpiece"]):
         focus_scores["equipment_and_tools"] += 4
@@ -349,6 +397,7 @@ def _short_model_answer(topic: str, expected_points: list[str], common_mistakes:
 
 def _fallback_item(topic: str, subject: str, course_context: str) -> dict[str, Any]:
     topic_norm = normalize_text(topic)
+    subject_norm = normalize_text(subject)
     context_terms = list(tokenize(course_context))[:6]
     must_know = [f"Define {topic or subject}", "Give the key clinical significance"]
     category = "general"
@@ -403,6 +452,14 @@ def _fallback_item(topic: str, subject: str, course_context: str) -> dict[str, A
             "Mention sterilization, disinfection, or maintenance",
         ]
         extra_tags = ["instrument", "equipment", "sterilization"]
+    elif subject_norm in SUBJECT_FOCUS_HINTS:
+        hint = SUBJECT_FOCUS_HINTS[subject_norm]
+        must_know = list(hint["must_know"])
+        extra_tags = list(hint["tags"])
+        if subject_norm == "orthodontics":
+            category = "procedure"
+        elif subject_norm == "preventive dentistry":
+            category = "general"
     if context_terms:
         must_know.append("Use course terms: " + ", ".join(context_terms[:4]))
     return {

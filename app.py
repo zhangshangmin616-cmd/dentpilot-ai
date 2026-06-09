@@ -73,6 +73,28 @@ AUTH_SESSION_KEYS = (
     "auth_session",
 )
 
+SUBJECT_OPTIONS = [
+    ("Dentistry", "口腔医学 Dentistry"),
+    ("Endodontics", "牙体牙髓 Endodontics"),
+    ("Periodontology", "牙周 Periodontology"),
+    ("Oral Surgery", "口腔外科 Oral Surgery"),
+    ("Oral Pathology", "口腔病理 Oral Pathology"),
+    ("Dental Anatomy", "牙体解剖 Dental Anatomy"),
+    ("Pharmacology", "药理学 Pharmacology"),
+    ("General Pathology", "普通病理 General Pathology"),
+    ("Orthodontics", "口腔正畸 Orthodontics"),
+    ("Preventive Dentistry", "口腔预防 Preventive Dentistry"),
+]
+
+SUBJECT_VALUES = [value for value, _label in SUBJECT_OPTIONS]
+SUBJECT_LABELS = dict(SUBJECT_OPTIONS)
+
+
+def format_subject_option(value: str) -> str:
+    if get_ui_lang() == "en":
+        return value
+    return SUBJECT_LABELS.get(value, value)
+
 
 def get_ui_lang() -> str:
     return normalize_lang(st.session_state.get("ui_lang", "zh"))
@@ -1986,8 +2008,9 @@ def render_oral_exam_mode(default_text: str):
     with control_col_1:
         oral_subject = st.selectbox(
             "Subject" if get_ui_lang() == "en" else "科目",
-            ["Dentistry", "Anatomy", "Pathology", "Pharmacology", "Endodontics", "Periodontology", "Oral Surgery"],
+            SUBJECT_VALUES,
             index=0,
+            format_func=format_subject_option,
         )
     with control_col_2:
         oral_difficulty = st.selectbox(t("difficulty"), ["easy", "medium", "hard"], index=1)
@@ -2360,9 +2383,10 @@ def render_clinical_case_mode(default_text: str):
     control_col_1, control_col_2 = st.columns(2)
     with control_col_1:
         case_subject = st.selectbox(
-            "Subject",
-            ["Dentistry", "Anatomy", "Pathology", "Pharmacology", "Endodontics", "Periodontology", "Oral Surgery"],
+            "Subject" if get_ui_lang() == "en" else "科目",
+            SUBJECT_VALUES,
             key="clinical_case_subject",
+            format_func=format_subject_option,
         )
     with control_col_2:
         case_difficulty = st.selectbox(
@@ -2881,16 +2905,8 @@ st.session_state["last_course_text"] = text
 
 subject = st.selectbox(
     t("subject"),
-    [
-        "Dentistry",
-        "Endodontics",
-        "Periodontology",
-        "Oral Surgery",
-        "Oral Pathology",
-        "Dental Anatomy",
-        "Pharmacology",
-        "General Pathology",
-    ],
+    SUBJECT_VALUES,
+    format_func=format_subject_option,
     key="study_pack_subject",
 )
 if not subject:

@@ -36,6 +36,8 @@ Main subjects:
 - Dental anatomy
 - Pharmacology
 - General pathology
+- Orthodontics
+- Preventive dentistry
 - Clinical case reasoning
 
 Exam style:

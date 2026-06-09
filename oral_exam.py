@@ -91,6 +91,21 @@ def _level_from_score(score: int) -> str:
     return "Excellent"
 
 
+def _subject_focus_note(subject: str) -> str:
+    subject_key = (subject or "").strip().lower()
+    if subject_key == "orthodontics":
+        return (
+            "For Orthodontics, focus on malocclusion, occlusion, cephalometrics, "
+            "orthodontic diagnosis, appliances, tooth movement, biomechanics, retention, and relapse prevention."
+        )
+    if subject_key == "preventive dentistry":
+        return (
+            "For Preventive Dentistry, focus on caries prevention, fluoride, plaque control, "
+            "oral hygiene instruction, diet counseling, sealants, epidemiology, risk assessment, and prevention programs."
+        )
+    return ""
+
+
 def _normalize_question(data: Dict[str, Any], subject: str, difficulty: str) -> Dict[str, Any]:
     allowed_difficulties = {"easy", "medium", "hard"}
     normalized_difficulty = str(data.get("difficulty", difficulty)).lower().strip()
@@ -164,6 +179,9 @@ You are an experienced examiner for English-taught dental and medical students.
 Create one text-based oral exam question from the course text.
 
 Subject: {subject}
+Subject focus:
+{_subject_focus_note(subject) or "Use the selected subject and course text as the main scope."}
+
 Difficulty: {difficulty}
 
 Course text:
