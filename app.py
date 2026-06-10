@@ -1380,6 +1380,161 @@ def build_anki_csv_bytes(pack: dict, subject: str) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
+def render_dental_loader(message: str, submessage: str | None = None, *, container: st.delta_generator.DeltaGenerator | None = None) -> None:
+    if not st.session_state.get("_dentpilot_dental_loader_css_injected"):
+        st.session_state["_dentpilot_dental_loader_css_injected"] = True
+        st.markdown(
+            """
+            <style>
+            .dentpilot-loader-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 12px;
+                margin: 12px 0 8px;
+                color: #0f172a;
+            }
+            .dentpilot-loader-stage {
+                position: relative;
+                width: 104px;
+                height: 104px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 999px;
+            }
+            .dentpilot-pulse-ring {
+                position: absolute;
+                width: 102px;
+                height: 102px;
+                border-radius: 50%;
+                border: 2px solid rgba(20, 184, 166, 0.45);
+                animation: dentpilot-ring 2.2s ease-in-out infinite;
+            }
+            .dentpilot-tooth-wrap {
+                position: absolute;
+                width: 72px;
+                height: 72px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 50%;
+                animation: dentpilot-tooth-float 2.4s ease-in-out infinite;
+                filter: drop-shadow(0 8px 22px rgba(30, 64, 175, 0.24));
+            }
+            .dentpilot-tooth-icon {
+                width: 48px;
+                height: 54px;
+            }
+            .dentpilot-tooth-path {
+                fill: #0f172a;
+                transform-origin: center;
+                animation: dentpilot-tooth-tilt 2.8s ease-in-out infinite;
+            }
+            .dentpilot-heartline {
+                width: 90px;
+                height: 20px;
+                position: relative;
+            }
+            .dentpilot-heartline svg {
+                width: 100%;
+                height: 100%;
+            }
+            .dentpilot-heartline-path {
+                fill: none;
+                stroke: #0ea5e9;
+                stroke-width: 2.6;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+                stroke-dasharray: 140;
+                stroke-dashoffset: 140;
+                animation: dentpilot-heartline 1.5s ease-in-out infinite;
+            }
+            .dentpilot-loader-text {
+                text-align: center;
+                font-weight: 600;
+                color: #0f172a;
+                letter-spacing: 0.02em;
+            }
+            .dentpilot-loader-subtext {
+                margin-top: 2px;
+                font-size: 0.92rem;
+                color: #334155;
+            }
+            @keyframes dentpilot-ring {
+                0% {
+                    transform: scale(0.92);
+                    opacity: 0.32;
+                    border-color: rgba(20, 184, 166, 0.25);
+                }
+                50% {
+                    transform: scale(1.06);
+                    opacity: 0.85;
+                    border-color: rgba(37, 99, 235, 0.58);
+                }
+                100% {
+                    transform: scale(0.92);
+                    opacity: 0.32;
+                    border-color: rgba(20, 184, 166, 0.25);
+                }
+            }
+            @keyframes dentpilot-tooth-float {
+                0% { transform: translateY(0px) rotate(0deg); }
+                50% { transform: translateY(-4px) rotate(-2deg); }
+                100% { transform: translateY(0px) rotate(0deg); }
+            }
+            @keyframes dentpilot-tooth-tilt {
+                0% { transform: rotate(0deg) scale(1); }
+                50% { transform: rotate(5deg) scale(1.03); }
+                100% { transform: rotate(0deg) scale(1); }
+            }
+            @keyframes dentpilot-heartline {
+                0% { stroke-dashoffset: 140; opacity: 0.4; }
+                35% { opacity: 1; }
+                100% { stroke-dashoffset: 0; opacity: 0.8; }
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    safe_submessage = f"<div class='dentpilot-loader-subtext'>{submessage}</div>" if submessage else ""
+    target = container or st
+    target.markdown(
+        f"""
+        <div class="dentpilot-loader-container">
+            <div class="dentpilot-loader-stage">
+                <div class="dentpilot-pulse-ring"></div>
+                <div class="dentpilot-tooth-wrap">
+                    <svg viewBox="0 0 64 64" class="dentpilot-tooth-icon" aria-hidden="true">
+                        <path
+                            class="dentpilot-tooth-path"
+                            d="M32 2C22.6 2 16 9.4 16 17.6c0 6.8 3.4 12.3 8.6 15.2v15.1c0 6.2-2.8 10.9-3.9 16.6-1.2 6.1 0.8 13.1 4.6 17.8 2.6 3.1 6 5.4 10 6.5 3.5 0.9 7.6 0.9 11.1 0 3.9-1.1 7.3-3.4 10-6.5 3.8-4.7 5.8-11.7 4.6-17.8-1.1-5.7-3.9-10.4-3.9-16.6V32.8C44.6 29.9 48 24.4 48 17.6 48 9.4 41.4 2 32 2Zm-4.8 55.4C21.9 57.2 18 57 18 57h28s-3.9.2-9.2 1.6c-2.3.6-5.3.6-8-.1Z"
+                        />
+                    </svg>
+                </div>
+            </div>
+            <div class="dentpilot-heartline">
+                <svg viewBox="0 0 90 20" preserveAspectRatio="none">
+                    <polyline class="dentpilot-heartline-path" points="0,14 18,8 34,14 46,4 60,16 70,10 90,14"/>
+                </svg>
+            </div>
+            <div class="dentpilot-loader-text">{message}{safe_submessage}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def run_with_dental_loader(message: str, task_fn, submessage: str | None = None):
+    loader_container = st.empty()
+    render_dental_loader(message, submessage, container=loader_container)
+    try:
+        return task_fn()
+    finally:
+        loader_container.empty()
+
+
 st.set_page_config(
     page_title="DentPilot AI",
     page_icon="🦷",
@@ -2079,8 +2234,9 @@ def render_oral_exam_mode(default_text: str):
             st.info("No wrong-question records yet. Please complete Daily Practice or Mock Exam first." if get_ui_lang() == "en" else "你还没有错题记录，请先完成日常练习或考前模拟。")
         else:
             try:
-                with st.spinner("Generating question..." if get_ui_lang() == "en" else "正在生成题目..."):
-                    prepared = _prepare_written_question(
+                prepared = run_with_dental_loader(
+                    "Generating question..." if get_ui_lang() == "en" else "正在生成题目...",
+                    lambda: _prepare_written_question(
                         exam_topic=exam_topic.strip() or _ensure_written_topic_from_input("", oral_subject, wrong_topics),
                         subject=oral_subject,
                         course_context=oral_course_text,
@@ -2088,19 +2244,21 @@ def render_oral_exam_mode(default_text: str):
                         question_type=selected_type,
                         mode=selected_mode,
                         question_seed=int(time.time()),
-                    )
-                    prepared["question_type"] = selected_type
-                    prepared["topic"] = prepared.get("topic") or exam_topic.strip() or oral_subject
-                    prepared["difficulty"] = prepared.get("difficulty") or oral_difficulty
-                    st.session_state["oral_question_data"] = prepared
-                    st.session_state["oral_exam_result"] = None
-                    st.session_state["reset_oral_student_answer"] = True
-                    if selected_mode == "考前模拟":
-                        st.session_state["oral_exam_rounds"] = []
-                    else:
-                        st.session_state["oral_exam_rounds"] = st.session_state.get("oral_exam_rounds", [])[:0]
-                    st.session_state["oral_rounds_completed"] = 0
-                    st.session_state["last_course_text"] = oral_course_text
+                    ),
+                    "AI is preparing your written practice question." if get_ui_lang() == "en" else "AI 正在准备题目，请稍等。",
+                )
+                prepared["question_type"] = selected_type
+                prepared["topic"] = prepared.get("topic") or exam_topic.strip() or oral_subject
+                prepared["difficulty"] = prepared.get("difficulty") or oral_difficulty
+                st.session_state["oral_question_data"] = prepared
+                st.session_state["oral_exam_result"] = None
+                st.session_state["reset_oral_student_answer"] = True
+                if selected_mode == "考前模拟":
+                    st.session_state["oral_exam_rounds"] = []
+                else:
+                    st.session_state["oral_exam_rounds"] = st.session_state.get("oral_exam_rounds", [])[:0]
+                st.session_state["oral_rounds_completed"] = 0
+                st.session_state["last_course_text"] = oral_course_text
                 st.success("已生成题目。")
             except Exception as exc:
                 st.error(f"生成题目失败：{exc}")
@@ -2173,8 +2331,9 @@ def render_oral_exam_mode(default_text: str):
                 st.error("请先输入你的答案。")
             else:
                 try:
-                    with st.spinner("正在评卷..."):
-                        result = grade_written_answer(
+                    result = run_with_dental_loader(
+                        "正在评卷..." if get_ui_lang() != "en" else "Grading answer...",
+                        lambda: grade_written_answer(
                             {
                                 "question_type": question_data.get("question_type", selected_type),
                                 "question": question_data.get("question", ""),
@@ -2188,7 +2347,9 @@ def render_oral_exam_mode(default_text: str):
                                 "mode": selected_mode,
                                 "topic": question_data.get("matched_topic") or question_data.get("topic", exam_topic),
                             }
-                        )
+                        ),
+                        "AI 教授正在分析你的答案，请稍候..." if get_ui_lang() != "en" else "AI is analyzing your answer...",
+                    )
                     st.session_state["oral_exam_result"] = result
                     attempt = {
                         "session_id": st.session_state.get("oral_session_id"),
@@ -2425,14 +2586,17 @@ def render_clinical_case_mode(default_text: str):
             st.error("请先粘贴课件内容。")
         else:
             try:
-                with st.spinner("正在生成病例题..."):
-                    st.session_state["clinical_case_data"] = generate_clinical_case(
+                st.session_state["clinical_case_data"] = run_with_dental_loader(
+                    "正在生成病例题..." if get_ui_lang() != "en" else "Generating case questions...",
+                    lambda: generate_clinical_case(
                         case_course_text,
                         case_subject,
                         case_difficulty,
-                    )
-                    st.session_state["clinical_case_result"] = None
-                    st.session_state["last_course_text"] = case_course_text
+                    ),
+                    "Clinical case materials are being generated from your course text." if get_ui_lang() == "en" else "根据课程内容生成病例材料，请稍候。",
+                )
+                st.session_state["clinical_case_result"] = None
+                st.session_state["last_course_text"] = case_course_text
                 st.success("病例已生成。")
             except ClinicalCaseConfigError as exc:
                 st.error(str(exc))
@@ -2490,8 +2654,11 @@ def render_clinical_case_mode(default_text: str):
                 st.error("请先输入你的病例分析答案。")
             else:
                 try:
-                    with st.spinner("正在批改病例分析..."):
-                        result = grade_clinical_case(case_data, student_answer, case_subject)
+                    result = run_with_dental_loader(
+                        "正在批改病例分析..." if get_ui_lang() != "en" else "Reviewing case analysis...",
+                        lambda: grade_clinical_case(case_data, student_answer, case_subject),
+                        "病例分析评分需要一些时间..." if get_ui_lang() != "en" else "Case grading in progress...",
+                    )
                     st.session_state["clinical_case_result"] = result
                     attempt = {
                         "subject": case_subject,
@@ -2589,19 +2756,22 @@ def render_weakness_analysis_mode():
 
     if st.button("Analyze My Weaknesses", type="primary", use_container_width=True):
         try:
-            with st.spinner("正在分析你的练习弱点..."):
-                st.session_state["weakness_analysis_result"] = analyze_weaknesses(
+            st.session_state["weakness_analysis_result"] = run_with_dental_loader(
+                "正在分析你的练习弱点..." if get_ui_lang() != "en" else "Analyzing your practice weaknesses...",
+                lambda: analyze_weaknesses(
                     combined_exam_history,
                     clinical_history,
+                ),
+                "系统正在整理错题画像与复习建议..." if get_ui_lang() != "en" else "Generating weakness summary and recommendations.",
+            )
+            for attempt in [*combined_exam_history, *clinical_history]:
+                result_data = attempt.get("result") or attempt
+                update_user_weaknesses_from_attempt(
+                    attempt.get("subject") or "Dentistry",
+                    attempt.get("topic") or attempt.get("case_title") or "General practice",
+                    result_data.get("missing_points") or [],
+                    result_data.get("score"),
                 )
-                for attempt in [*combined_exam_history, *clinical_history]:
-                    result_data = attempt.get("result") or attempt
-                    update_user_weaknesses_from_attempt(
-                        attempt.get("subject") or "Dentistry",
-                        attempt.get("topic") or attempt.get("case_title") or "General practice",
-                        result_data.get("missing_points") or [],
-                        result_data.get("score"),
-                    )
             st.success("弱项分析已完成。")
         except WeaknessAnalysisConfigError as exc:
             st.error(str(exc))
@@ -2845,18 +3015,27 @@ if uploaded_course_file is not None:
         uploaded_source_name = uploaded_course_file.name
         file_suffix = Path(uploaded_course_file.name).suffix.lower()
         if file_suffix == ".pdf":
-            with st.spinner("Extracting text from PDF..."):
-                uploaded_text, extraction_report = extract_pdf_text(uploaded_course_file)
+            uploaded_text, extraction_report = run_with_dental_loader(
+                "正在分析课件内容，请稍等..." if get_ui_lang() == "en" else "正在分析课件内容，请稍等...",
+                lambda: extract_pdf_text(uploaded_course_file),
+                "大文件会分块处理，请耐心等待。" if get_ui_lang() == "en" else "大文件会分块处理，请稍候。",
+            )
             source_label = f"PDF 的 {extraction_report.get('total_pages', 0)} 页"
             uploaded_page_or_slide_count = int(extraction_report.get("total_pages", 0))
         elif file_suffix == ".docx":
-            with st.spinner("Extracting text from Word document..."):
-                uploaded_text, paragraph_count = extract_docx_text(uploaded_course_file)
+            uploaded_text, paragraph_count = run_with_dental_loader(
+                "正在分析课件内容，请稍等..." if get_ui_lang() == "en" else "正在分析课件内容，请稍等...",
+                lambda: extract_docx_text(uploaded_course_file),
+                "正在读取 Word 文本..." if get_ui_lang() == "en" else "正在读取 Word 文本...",
+            )
             source_label = f"Word 文档的 {paragraph_count} 个段落"
             uploaded_page_or_slide_count = int(paragraph_count)
         elif file_suffix == ".pptx":
-            with st.spinner("Extracting text from PowerPoint..."):
-                uploaded_text, ppt_report = extract_pptx_text(uploaded_course_file)
+            uploaded_text, ppt_report = run_with_dental_loader(
+                "正在分析课件内容，请稍等..." if get_ui_lang() == "en" else "正在分析课件内容，请稍等...",
+                lambda: extract_pptx_text(uploaded_course_file),
+                "正在读取 PPT 内容，请稍候。" if get_ui_lang() == "en" else "正在读取 PPT 内容，请稍候。",
+            )
             source_label = f"PowerPoint 的 {ppt_report.get('total_slides', 0)} 页幻灯片"
             uploaded_page_or_slide_count = int(ppt_report.get("total_slides", 0))
             with st.expander("PowerPoint 提取报告", expanded=True):
@@ -2879,8 +3058,11 @@ if uploaded_course_file is not None:
             source_label = "旧版 PowerPoint 文件"
             st.warning("暂不支持直接解析旧版 .ppt 文件。请先另存为 .pptx 后再上传，或复制粘贴幻灯片文字。")
         elif file_suffix == ".txt":
-            with st.spinner("Extracting text from TXT file..."):
-                uploaded_text, line_count = extract_txt_text(uploaded_course_file)
+            uploaded_text, line_count = run_with_dental_loader(
+                "正在分析课件内容，请稍等..." if get_ui_lang() == "en" else "正在分析课件内容，请稍等...",
+                lambda: extract_txt_text(uploaded_course_file),
+                "正在读取 TXT 内容..." if get_ui_lang() == "en" else "正在读取 TXT 内容...",
+            )
             source_label = f"TXT 文件的 {line_count} 行"
         else:
             source_label = "课程文档"
@@ -3007,15 +3189,18 @@ if generate:
         st.error("请先粘贴英文课程内容，或上传 PDF / Word(docx) / TXT 文档。")
         st.stop()
 
-    with st.spinner("正在按题号/章节生成复习包，大文件可能需要几分钟..."):
-        pack = generate_study_pack(
+    pack = run_with_dental_loader(
+        "正在按题号/章节生成复习包，大文件可能需要几分钟..." if get_ui_lang() == "en" else "正在按题号/章节生成复习包，大文件可能需要几分钟...",
+        lambda: generate_study_pack(
             text,
             subject,
             generation_depth,
             int(expected_section_count) or None,
             source_filename=uploaded_source_name or (uploaded_course_file.name if uploaded_course_file is not None else "Pasted course text"),
             page_or_slide_count=uploaded_page_or_slide_count,
-        )
+        ),
+        "课程内容会分块处理，请不要关闭页面。" if get_ui_lang() == "en" else "课程内容会分块处理，请不要关闭页面。",
+    )
 
     st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
     st.markdown("### 复习包")
