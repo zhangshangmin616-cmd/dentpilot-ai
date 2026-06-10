@@ -72,6 +72,48 @@ SUBJECT_FOCUS_HINTS: dict[str, dict[str, Any]] = {
         ],
         "tags": ["preventive dentistry", "caries prevention", "fluoride", "plaque control", "sealants", "epidemiology"],
     },
+    "microbiology": {
+        "keywords": {
+            "microbiology", "microbe", "microorganism", "bacteria", "bacterial", "gram positive",
+            "gram negative", "acid fast", "spore", "spores", "capsule", "capsules", "genetics",
+            "culture", "growth", "sterilization", "sterilisation", "disinfection", "antibiotic",
+            "antimicrobial", "resistance", "virus", "viral", "fungi", "yeast", "mold", "mould",
+            "protozoa", "parasite", "parasites", "host microbe", "immunity", "infection",
+            "oral microbiology", "biofilm", "dental plaque", "cariogenic", "streptococcus mutans",
+            "periodontal pathogen", "opportunistic infection", "laboratory diagnosis",
+            "微生物", "细菌", "革兰阳性", "革兰阴性", "抗酸", "芽孢", "荚膜", "培养", "灭菌",
+            "消毒", "抗生素", "耐药", "病毒", "真菌", "寄生虫", "免疫", "感染", "口腔微生物",
+            "菌斑", "生物膜", "龋病相关微生物", "牙周致病菌", "机会感染", "实验室诊断",
+        },
+        "focus": [
+            "definition_scope",
+            "classification",
+            "structure_function",
+            "mechanism_pathogenesis",
+            "hygiene_infection_control",
+            "diagnosis_methods",
+            "treatment_principles",
+            "patient_communication",
+        ],
+        "must_know": [
+            "Define or classify the microorganism or microbiological process",
+            "Describe structure, virulence factors, transmission, and pathogenesis when relevant",
+            "Explain laboratory diagnosis, culture, sterilization, disinfection, or antimicrobial resistance when relevant",
+            "Connect the topic to oral microbiology, dental plaque biofilm, caries, periodontal pathogens, or opportunistic infection",
+        ],
+        "tags": [
+            "microbiology",
+            "bacteria",
+            "viruses",
+            "fungi",
+            "sterilization",
+            "disinfection",
+            "antibiotic resistance",
+            "oral microbiology",
+            "biofilm",
+            "laboratory diagnosis",
+        ],
+    },
 }
 
 
@@ -452,6 +494,32 @@ def _fallback_item(topic: str, subject: str, course_context: str) -> dict[str, A
             "Mention sterilization, disinfection, or maintenance",
         ]
         extra_tags = ["instrument", "equipment", "sterilization"]
+    elif subject_norm == "microbiology" or any(
+        word in topic_norm
+        for word in [
+            "microbiology", "bacteria", "gram", "acid-fast", "spore", "capsule",
+            "culture", "sterilization", "disinfection", "antibiotic resistance",
+            "virus", "fungi", "parasite", "biofilm", "plaque", "pathogen",
+            "laboratory diagnosis",
+        ]
+    ):
+        category = "general"
+        must_know = [
+            f"Define or classify {topic or subject}",
+            "Describe structure, virulence factors, transmission, or pathogenesis when relevant",
+            "Explain laboratory diagnosis, culture, sterilization/disinfection, or antimicrobial resistance when relevant",
+            "Connect the topic to oral microbiology, plaque biofilm, caries microorganisms, periodontal pathogens, or opportunistic infection",
+        ]
+        extra_tags = [
+            "microbiology",
+            "classification",
+            "structure",
+            "pathogenesis",
+            "diagnosis",
+            "sterilization",
+            "antimicrobial resistance",
+            "oral microbiology",
+        ]
     elif subject_norm in SUBJECT_FOCUS_HINTS:
         hint = SUBJECT_FOCUS_HINTS[subject_norm]
         must_know = list(hint["must_know"])
@@ -459,6 +527,8 @@ def _fallback_item(topic: str, subject: str, course_context: str) -> dict[str, A
         if subject_norm == "orthodontics":
             category = "procedure"
         elif subject_norm == "preventive dentistry":
+            category = "general"
+        elif subject_norm == "microbiology":
             category = "general"
     if context_terms:
         must_know.append("Use course terms: " + ", ".join(context_terms[:4]))

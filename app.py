@@ -84,6 +84,7 @@ SUBJECT_OPTIONS = [
     ("General Pathology", "普通病理 General Pathology"),
     ("Orthodontics", "口腔正畸 Orthodontics"),
     ("Preventive Dentistry", "口腔预防 Preventive Dentistry"),
+    ("Microbiology", "微生物学 Microbiology"),
 ]
 
 SUBJECT_VALUES = [value for value, _label in SUBJECT_OPTIONS]

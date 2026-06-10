@@ -175,6 +175,12 @@ def _subject_focus_note(subject: str) -> str:
             "For Preventive Dentistry, focus on caries prevention, fluoride, plaque control, "
             "oral hygiene instruction, diet counseling, sealants, epidemiology, prevention programs, and patient education."
         )
+    if subject_key == "microbiology":
+        return (
+            "For Microbiology, focus on infection mechanisms, virulence factors, transmission, immunity, laboratory diagnosis, "
+            "sterilization and disinfection, antimicrobial treatment and resistance, oral microbiology, dental plaque biofilm, "
+            "caries-related microorganisms, periodontal pathogens, opportunistic infections, and oral clinical relevance."
+        )
     return ""
 
 

@@ -53,6 +53,17 @@ def subject_focus_note(subject: str) -> str:
             "Preventive Dentistry focus: caries prevention, fluoride, plaque control, oral hygiene, "
             "diet counseling, sealants, epidemiology, risk assessment, and prevention programs."
         )
+    if subject_key == "microbiology":
+        return (
+            "Microbiology focus: bacterial structure and classification, Gram-positive and Gram-negative bacteria, "
+            "acid-fast bacteria, spores and capsules, bacterial genetics, growth and culture, sterilization and "
+            "disinfection, antibiotics and resistance, viruses, fungi, parasites, host-microbe interaction, "
+            "immunity and infection, oral microbiology, dental plaque biofilm, caries-related microorganisms, "
+            "periodontal pathogens, opportunistic infections, and laboratory diagnosis. Ask about definition, "
+            "classification, structure, pathogenesis, virulence factors, transmission, diagnosis, prevention, "
+            "sterilization/disinfection, antimicrobial treatment, and oral clinical relevance. Do not force "
+            "Microbiology topics into dental procedure templates."
+        )
     return "Use the selected subject and course text as the main scope."
 
 
