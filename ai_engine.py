@@ -264,6 +264,170 @@ def split_text_into_sections(text: str) -> List[Dict[str, Any]]:
     return detect_exam_sections(text)
 
 
+def extract_section_topics(text: str, max_topics: int = 8) -> List[str]:
+    """Small local topic detector for coverage/debug reporting across early, middle, and late chunks."""
+    normalized = clean_text(text)
+    if not normalized:
+        return []
+    candidates: List[str] = []
+    heading_patterns = [
+        r"(?:Question|Topic|Chapter|Section)\s+\d{1,3}[:\.\)]?\s+([A-Z][A-Za-z0-9,\-/ ()]{8,90})",
+        r"(?m)^\s*\d{1,3}[\.\)]\s+([A-Z][A-Za-z0-9,\-/ ()]{8,90})",
+        r"(?m)^([A-Z][A-Za-z0-9,\-/ ()]{10,90})$",
+    ]
+    for pattern in heading_patterns:
+        for match in re.finditer(pattern, text):
+            topic = re.sub(r"\s+", " ", match.group(1)).strip(" :-")
+            if 5 <= len(topic) <= 100:
+                candidates.append(topic)
+
+    if not candidates:
+        stop_words = {
+            "the", "and", "with", "from", "this", "that", "have", "were", "will", "are", "for",
+            "into", "used", "using", "their", "there", "about", "between", "clinical", "dental",
+            "patient", "patients", "treatment", "lecture", "slide",
+        }
+        words = [
+            word.lower()
+            for word in re.findall(r"\b[A-Za-z][A-Za-z\-]{4,}\b", normalized)
+            if word.lower() not in stop_words
+        ]
+        counts: Dict[str, int] = {}
+        for word in words:
+            counts[word] = counts.get(word, 0) + 1
+        candidates = [
+            word
+            for word, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[: max_topics * 2]
+        ]
+
+    unique_topics: List[str] = []
+    seen = set()
+    for topic in candidates:
+        key = topic.lower()
+        if key not in seen:
+            seen.add(key)
+            unique_topics.append(topic)
+        if len(unique_topics) >= max_topics:
+            break
+    return unique_topics
+
+
+def split_long_section(section: Dict[str, Any], max_chars: int, overlap: int = 600) -> List[Dict[str, Any]]:
+    """Split one detected section into AI-safe chunks without dropping its middle content."""
+    text = str(section.get("text", ""))
+    if len(text) <= max_chars:
+        next_section = dict(section)
+        next_section["chunk_index"] = 1
+        next_section["chunk_total"] = 1
+        next_section["parent_number"] = section.get("number")
+        next_section["char_length"] = len(text)
+        return [next_section]
+
+    step = max(1, max_chars - overlap)
+    chunks: List[Dict[str, Any]] = []
+    for index, start in enumerate(range(0, len(text), step), start=1):
+        chunk_text = text[start:start + max_chars].strip()
+        if not chunk_text:
+            continue
+        chunk = dict(section)
+        chunk["text"] = chunk_text
+        chunk["parent_number"] = section.get("number")
+        chunk["chunk_index"] = index
+        chunk["section_number_display"] = f"{section.get('number')}.{index}"
+        chunk["number"] = f"{section.get('number')}.{index}"
+        chunk["title"] = f"{section.get('title', 'Section')} (part {index})"
+        chunk["detected_by"] = f"{section.get('detected_by', 'section')}_split"
+        chunk["char_length"] = len(chunk_text)
+        chunks.append(chunk)
+
+    total = len(chunks)
+    for chunk in chunks:
+        chunk["chunk_total"] = total
+    return chunks
+
+
+def prepare_study_pack_chunks(
+    sections: List[Dict[str, Any]],
+    depth: str,
+    max_chars_override: int | None = None,
+    overlap: int = 600,
+) -> List[Dict[str, Any]]:
+    settings = depth_settings(depth)
+    max_chars = max_chars_override or int(settings["max_section_chars"])
+    chunks: List[Dict[str, Any]] = []
+    for section in sections:
+        chunks.extend(split_long_section(section, max_chars, overlap))
+    for chunk_order, chunk in enumerate(chunks, start=1):
+        chunk["chunk_order"] = chunk_order
+        chunk["chunk_char_length"] = len(str(chunk.get("text", "")))
+        chunk["detected_topics"] = extract_section_topics(str(chunk.get("text", "")))
+    return chunks
+
+
+def summarize_chunk_band(chunks: List[Dict[str, Any]]) -> List[str]:
+    topics: List[str] = []
+    for chunk in chunks:
+        topics.extend(chunk.get("detected_topics", []))
+    seen = set()
+    output = []
+    for topic in topics:
+        key = str(topic).lower()
+        if key not in seen:
+            seen.add(key)
+            output.append(str(topic))
+        if len(output) >= 10:
+            break
+    return output
+
+
+def build_processing_details(
+    source_text: str,
+    original_sections: List[Dict[str, Any]],
+    chunks: List[Dict[str, Any]],
+    chunk_statuses: List[Dict[str, Any]],
+    model_name: str,
+    source_filename: str = "",
+    page_or_slide_count: int | None = None,
+    chunk_size: int = 0,
+    overlap_size: int = 0,
+) -> Dict[str, Any]:
+    total_chunks = len(chunks)
+    if total_chunks >= 3:
+        third = max(1, total_chunks // 3)
+        early_chunks = chunks[:third]
+        middle_chunks = chunks[third: max(third + 1, total_chunks - third)]
+        late_chunks = chunks[-third:]
+    else:
+        early_chunks = chunks[:1]
+        middle_chunks = chunks[1:2] or chunks[:1]
+        late_chunks = chunks[-1:] if chunks else []
+    processed_count = sum(1 for item in chunk_statuses if item.get("status") in {"success", "fallback"})
+    failed_count = sum(1 for item in chunk_statuses if item.get("status") == "failed")
+    fallback_count = sum(1 for item in chunk_statuses if item.get("status") == "fallback")
+    skipped_count = sum(1 for item in chunk_statuses if item.get("status") == "skipped")
+    return {
+        "uploaded_file_name": source_filename,
+        "extracted_char_count": len(source_text),
+        "estimated_page_or_slide_count": page_or_slide_count or 0,
+        "detected_section_count": len(original_sections),
+        "chunk_count": total_chunks,
+        "chunk_size": chunk_size,
+        "overlap_size": overlap_size,
+        "processed_chunk_count": processed_count,
+        "failed_chunk_count": failed_count,
+        "fallback_chunk_count": fallback_count,
+        "skipped_chunk_count": skipped_count,
+        "model_used": model_name,
+        "first_chunk_preview": str(chunks[0].get("text", ""))[:200] if chunks else "",
+        "middle_chunk_preview": str(chunks[total_chunks // 2].get("text", ""))[:200] if chunks else "",
+        "last_chunk_preview": str(chunks[-1].get("text", ""))[:200] if chunks else "",
+        "early_topics": summarize_chunk_band(early_chunks),
+        "middle_topics": summarize_chunk_band(middle_chunks),
+        "late_topics": summarize_chunk_band(late_chunks),
+        "chunk_statuses": chunk_statuses,
+    }
+
+
 def build_sections_from_markers(
     normalized: str,
     markers: List[re.Match],
@@ -566,17 +730,7 @@ def build_section_prompt(
 ) -> str:
     settings = depth_settings(depth)
     raw_section_text = str(section.get("text", ""))
-    max_chars = int(settings["max_section_chars"])
-    if len(raw_section_text) > max_chars:
-        head_chars = max_chars - 1800
-        tail_chars = 1500
-        section_text = (
-            raw_section_text[:head_chars]
-            + "\n\n[Middle omitted only because this section is very long; preserve all detected sections.]\n\n"
-            + raw_section_text[-tail_chars:]
-        )
-    else:
-        section_text = raw_section_text
+    section_text = raw_section_text
     schema_example = {
         "title": section.get("title", ""),
         "chinese_core_explanation": "中文核心讲解，覆盖定义、机制、临床意义、考试问法。",
@@ -735,6 +889,8 @@ def aggregate_modules(
     mode: str = "ai",
     status_message: str = "",
     expected_section_count: int | None = None,
+    processing_details: Dict[str, Any] | None = None,
+    original_sections: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     glossary = []
     quiz = []
@@ -746,6 +902,8 @@ def aggregate_modules(
         flashcards.extend(module.get("flashcards", []))
         key_concepts.extend(module.get("must_know", [])[:3])
 
+    processing_details = processing_details or {}
+    original_section_count = len(original_sections or sections)
     detected_count = len(sections)
     generated_count = len(modules)
     missing_sections = [
@@ -756,6 +914,8 @@ def aggregate_modules(
     coverage_percent = round((generated_count / detected_count) * 100, 1) if detected_count else 0
     coverage_report = {
         "detected_sections": detected_count,
+        "original_detected_sections": original_section_count,
+        "total_chunks": detected_count,
         "generated_sections": generated_count,
         "coverage_percent": coverage_percent,
         "missing_sections": missing_sections,
@@ -777,7 +937,19 @@ def aggregate_modules(
         f"Question {module.get('section_number')}: {module.get('title')}\n{module.get('chinese_core_explanation')}"
         for module in modules
     )
-    exam_summary = (
+    coverage_header = (
+        "# Coverage Report\n\n"
+        f"- Extracted characters: {processing_details.get('extracted_char_count', 0)}\n"
+        f"- Total chunks: {detected_count}\n"
+        f"- Processed chunks: {processing_details.get('processed_chunk_count', generated_count)}\n"
+        f"- Failed chunks: {processing_details.get('failed_chunk_count', 0)}\n"
+        f"- Model: {processing_details.get('model_used', '')}\n"
+        f"- Coverage status: {'complete' if generated_count >= detected_count and not missing_sections else 'partial'}\n"
+        f"- Early-section topics: {', '.join(processing_details.get('early_topics', []))}\n"
+        f"- Middle-section topics: {', '.join(processing_details.get('middle_topics', []))}\n"
+        f"- Late-section topics: {', '.join(processing_details.get('late_topics', []))}\n\n"
+    )
+    exam_summary = coverage_header + (
         f"检测到 {detected_count} 个考试题/章节，已生成 {generated_count} 个复习模块，覆盖率 {coverage_percent}%。\n\n"
         "考前使用方法：先按“逐题讲解”理解每个模块，再用“口试题库”和“Quiz”检查自己是否能用英文回答。"
         "重点关注 Must-know points、Common mistakes 和 Short answer template。"
@@ -793,6 +965,7 @@ def aggregate_modules(
         "generation_depth": depth,
         "study_modules": modules,
         "coverage_report": coverage_report,
+        "processing_details": processing_details,
         "chinese_explanation": chinese_explanation,
         "key_concepts": key_concepts,
         "exam_summary": exam_summary,
@@ -858,85 +1031,118 @@ def normalize_study_pack(data: Dict[str, Any], subject: str, fallback_terms: Lis
     return data
 
 
-def generate_study_pack(
+def generate_study_pack_full_pipeline(
     text: str,
     subject: str,
-    depth: str = "标准复习包",
+    depth: str,
     expected_section_count: int | None = None,
+    source_filename: str = "",
+    page_or_slide_count: int | None = None,
 ) -> Dict[str, Any]:
-    """
-    Streamlit 的 app.py 会调用这个函数。
-    这里改成：先检测题号/章节，再逐题生成模块，避免长文后半部分被压缩丢失。
-    """
+    """Verified Study Pack pipeline: extract-ready text -> sections -> chunks -> per-chunk modules -> full export data."""
     raw_text = normalize_document_text(text)
-
     if not raw_text:
         return local_fallback_study_pack(raw_text, subject, "没有输入文本。")
 
-    sections = detect_exam_sections(raw_text, expected_section_count)
-    if not sections:
-        sections = detect_exam_sections(clean_text(raw_text), expected_section_count)
+    original_sections = detect_exam_sections(raw_text, expected_section_count)
+    if not original_sections:
+        original_sections = detect_exam_sections(clean_text(raw_text), expected_section_count)
 
+    settings = depth_settings(depth)
+    chunk_size = int(settings["max_section_chars"])
+    overlap_size = 600
+    processing_chunks = prepare_study_pack_chunks(original_sections, depth, chunk_size, overlap_size)
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() if api_key else "local_fallback"
 
+    modules: List[Dict[str, Any]] = []
+    chunk_statuses: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    client: OpenAI | None = None
+    if api_key:
+        try:
+            client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        except Exception as exc:
+            errors.append(f"Client initialization failed: {exc}")
+            client = None
+
+    for chunk in processing_chunks:
+        status = "success"
+        error_message = ""
+        try:
+            if client is None:
+                raise RuntimeError("AI service is not configured or unavailable")
+            module = generate_section_module(client, model_name, chunk, subject, depth)
+        except Exception as exc:
+            status = "fallback"
+            error_message = str(exc)
+            errors.append(f"Chunk {chunk.get('chunk_order')} / Section {chunk.get('number')}: {error_message}")
+            module = build_section_fallback_module(chunk, subject, error_message)
+        modules.append(module)
+        chunk_statuses.append({
+            "chunk_index": chunk.get("chunk_order"),
+            "section_number": chunk.get("number"),
+            "char_length": chunk.get("chunk_char_length", len(str(chunk.get("text", "")))),
+            "detected_topics": chunk.get("detected_topics", []),
+            "status": status,
+            "error_message": error_message,
+        })
+
+    processing_details = build_processing_details(
+        raw_text,
+        original_sections,
+        processing_chunks,
+        chunk_statuses,
+        model_name,
+        source_filename,
+        page_or_slide_count,
+        chunk_size,
+        overlap_size,
+    )
+
+    failed_or_fallback = [item for item in chunk_statuses if item.get("status") != "success"]
     if not api_key:
-        modules = [
-            build_section_fallback_module(section, subject, "AI 服务未配置。")
-            for section in sections
-        ]
-        return aggregate_modules(
-            modules,
-            sections,
-            subject,
-            depth,
-            mode="fallback",
-            status_message="AI 服务未配置，当前已按章节生成本地备用复习包。",
-            expected_section_count=expected_section_count,
-        )
+        mode = "fallback"
+        status_message = "AI 服务未配置，当前已按全部分块生成本地备用复习包。"
+    elif failed_or_fallback:
+        mode = "partial"
+        status_message = "部分分块处理失败或使用本地备用内容，但系统已保留每个检测到的分块。"
+    else:
+        mode = "ai"
+        status_message = f"AI 已处理 {len(modules)} / {len(processing_chunks)} 个分块。"
 
-    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
+    pack = aggregate_modules(
+        modules,
+        processing_chunks,
+        subject,
+        depth,
+        mode=mode,
+        status_message=status_message,
+        expected_section_count=expected_section_count,
+        processing_details=processing_details,
+        original_sections=original_sections,
+    )
+    if errors:
+        pack["chunk_errors"] = errors
+    return pack
 
-    try:
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com"
-        )
 
-        modules = []
-        skipped_errors = []
-        for section in sections:
-            try:
-                modules.append(generate_section_module(client, model_name, section, subject, depth))
-            except Exception as section_error:
-                skipped_errors.append(f"Question {section.get('number')}: {section_error}")
-                modules.append(build_section_fallback_module(section, subject, str(section_error)))
 
-        mode = "ai" if not skipped_errors else "partial"
-        if skipped_errors:
-            status_message = "部分模块使用了本地备用模式，但系统仍保留了每个检测到的章节。"
-        else:
-            status_message = f"AI 已生成 {len(modules)} 个逐题复习模块。"
-        return aggregate_modules(
-            modules,
-            sections,
-            subject,
-            depth,
-            mode=mode,
-            status_message=status_message,
-            expected_section_count=expected_section_count,
-        )
-
-    except Exception as e:
-        modules = [
-            build_section_fallback_module(section, subject, str(e))
-            for section in sections
-        ]
-        return aggregate_modules(
-            modules,
-            sections,
-            subject,
-            depth,
-            mode="fallback",
-            status_message="AI 服务暂时不可用，当前已按章节生成本地备用复习包。",
-            expected_section_count=expected_section_count,
-        )
+def generate_study_pack(
+    text: str,
+    subject: str,
+    depth: str = "?????",
+    expected_section_count: int | None = None,
+    source_filename: str = "",
+    page_or_slide_count: int | None = None,
+) -> Dict[str, Any]:
+    """Public Study Pack entrypoint used by app.py."""
+    return generate_study_pack_full_pipeline(
+        text=text,
+        subject=subject,
+        depth=depth,
+        expected_section_count=expected_section_count,
+        source_filename=source_filename,
+        page_or_slide_count=page_or_slide_count,
+    )

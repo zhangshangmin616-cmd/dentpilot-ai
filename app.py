@@ -1170,10 +1170,22 @@ def build_study_pack_pdf(pack: dict, subject: str) -> bytes:
     ]
 
     modules = pack.get("study_modules", [])
+    processing_details = pack.get("processing_details", {})
     if modules:
         story.extend(
             [
-                Paragraph("Coverage", section),
+                Paragraph("Coverage Report", section),
+                Paragraph(
+                    f"Extracted characters: {processing_details.get('extracted_char_count', 0)}<br/>"
+                    f"Total chunks: {coverage.get('total_chunks', detected_sections)}<br/>"
+                    f"Processed chunks: {processing_details.get('processed_chunk_count', generated_sections)}<br/>"
+                    f"Failed chunks: {processing_details.get('failed_chunk_count', 0)}<br/>"
+                    f"Model: {as_paragraph_text(processing_details.get('model_used', ''))}<br/>"
+                    f"Early topics: {as_paragraph_text(', '.join(processing_details.get('early_topics', [])))}<br/>"
+                    f"Middle topics: {as_paragraph_text(', '.join(processing_details.get('middle_topics', [])))}<br/>"
+                    f"Late topics: {as_paragraph_text(', '.join(processing_details.get('late_topics', [])))}",
+                    body,
+                ),
                 Paragraph(
                     f"Detected {detected_sections} sections, generated {generated_sections} modules."
                     f" Coverage {coverage_percent}%.",
@@ -1253,11 +1265,22 @@ def build_study_pack_markdown(pack: dict, subject: str) -> bytes:
 
     modules = pack.get("study_modules", [])
     coverage = pack.get("coverage_report", {})
+    processing_details = pack.get("processing_details", {})
 
     if modules:
         lines.extend(
             [
-                "## Coverage",
+                "## Coverage Report",
+                "",
+                f"- Extracted characters: {processing_details.get('extracted_char_count', 0)}",
+                f"- Total chunks: {coverage.get('total_chunks', len(modules))}",
+                f"- Processed chunks: {processing_details.get('processed_chunk_count', len(modules))}",
+                f"- Failed chunks: {processing_details.get('failed_chunk_count', 0)}",
+                f"- Model: {processing_details.get('model_used', '')}",
+                f"- Coverage status: {'complete' if not coverage.get('has_missing') else 'partial'}",
+                f"- Early-section topics: {', '.join(processing_details.get('early_topics', []))}",
+                f"- Middle-section topics: {', '.join(processing_details.get('middle_topics', []))}",
+                f"- Late-section topics: {', '.join(processing_details.get('late_topics', []))}",
                 "",
                 f"- Detected sections: {coverage.get('detected_sections', len(modules))}",
                 f"- Generated sections: {coverage.get('generated_sections', len(modules))}",
@@ -2815,21 +2838,27 @@ uploaded_course_file = st.file_uploader(
 
 uploaded_text = ""
 extraction_report = None
+uploaded_source_name = ""
+uploaded_page_or_slide_count = 0
 if uploaded_course_file is not None:
     try:
+        uploaded_source_name = uploaded_course_file.name
         file_suffix = Path(uploaded_course_file.name).suffix.lower()
         if file_suffix == ".pdf":
             with st.spinner("Extracting text from PDF..."):
                 uploaded_text, extraction_report = extract_pdf_text(uploaded_course_file)
             source_label = f"PDF 的 {extraction_report.get('total_pages', 0)} 页"
+            uploaded_page_or_slide_count = int(extraction_report.get("total_pages", 0))
         elif file_suffix == ".docx":
             with st.spinner("Extracting text from Word document..."):
                 uploaded_text, paragraph_count = extract_docx_text(uploaded_course_file)
             source_label = f"Word 文档的 {paragraph_count} 个段落"
+            uploaded_page_or_slide_count = int(paragraph_count)
         elif file_suffix == ".pptx":
             with st.spinner("Extracting text from PowerPoint..."):
                 uploaded_text, ppt_report = extract_pptx_text(uploaded_course_file)
             source_label = f"PowerPoint 的 {ppt_report.get('total_slides', 0)} 页幻灯片"
+            uploaded_page_or_slide_count = int(ppt_report.get("total_slides", 0))
             with st.expander("PowerPoint 提取报告", expanded=True):
                 st.markdown(f"**文件名：** {ppt_report.get('filename', '')}")
                 st.markdown(f"**总幻灯片数：** {ppt_report.get('total_slides', 0)}")
@@ -2984,6 +3013,8 @@ if generate:
             subject,
             generation_depth,
             int(expected_section_count) or None,
+            source_filename=uploaded_source_name or (uploaded_course_file.name if uploaded_course_file is not None else "Pasted course text"),
+            page_or_slide_count=uploaded_page_or_slide_count,
         )
 
     st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
@@ -3045,13 +3076,44 @@ if generate:
     st.info("手机端点击下载后，请在浏览器下载管理或文件 App 中查看。如果 PDF 无法打开，请先下载 Markdown 版本。")
     modules = pack.get("study_modules", [])
     coverage = pack.get("coverage_report", {})
+    processing_details = pack.get("processing_details", {})
     detected_sections = coverage.get("detected_sections", len(modules))
+    original_detected_sections = coverage.get("original_detected_sections", detected_sections)
     generated_sections = coverage.get("generated_sections", len(modules))
     coverage_percent = coverage.get("coverage_percent", 100 if modules else 0)
 
+    with st.expander("处理详情 / Processing Details", expanded=True):
+        detail_col_1, detail_col_2, detail_col_3 = st.columns(3)
+        detail_col_1.metric("提取字符数", processing_details.get("extracted_char_count", len(text)))
+        detail_col_2.metric("分块数量", processing_details.get("chunk_count", detected_sections))
+        detail_col_3.metric("已处理分块", processing_details.get("processed_chunk_count", generated_sections))
+        st.markdown(f"**文件名：** {processing_details.get('uploaded_file_name') or (uploaded_course_file.name if uploaded_course_file is not None else 'Pasted course text')}")
+        st.markdown(f"**估计页数/幻灯片数：** {processing_details.get('estimated_page_or_slide_count', uploaded_page_or_slide_count)}")
+        st.markdown(f"**Chunk size：** {processing_details.get('chunk_size', '')}")
+        st.markdown(f"**Overlap size：** {processing_details.get('overlap_size', '')}")
+        st.markdown(f"**失败分块数：** {processing_details.get('failed_chunk_count', 0)}")
+        st.markdown(f"**备用分块数：** {processing_details.get('fallback_chunk_count', 0)}")
+        st.markdown(f"**跳过分块数：** {processing_details.get('skipped_chunk_count', 0)}")
+        st.markdown(f"**模型：** {processing_details.get('model_used', '')}")
+
+        preview_col_1, preview_col_2, preview_col_3 = st.columns(3)
+        preview_col_1.text_area("第一个 chunk 前 200 字", processing_details.get("first_chunk_preview", ""), height=160, disabled=True)
+        preview_col_2.text_area("中间 chunk 前 200 字", processing_details.get("middle_chunk_preview", ""), height=160, disabled=True)
+        preview_col_3.text_area("最后 chunk 前 200 字", processing_details.get("last_chunk_preview", ""), height=160, disabled=True)
+
+        st.markdown("**早期 chunks 主题：** " + "；".join(processing_details.get("early_topics", [])))
+        st.markdown("**中间 chunks 主题：** " + "；".join(processing_details.get("middle_topics", [])))
+        st.markdown("**后期 chunks 主题：** " + "；".join(processing_details.get("late_topics", [])))
+        chunk_statuses = processing_details.get("chunk_statuses", [])
+        if chunk_statuses:
+            st.dataframe(pd.DataFrame(chunk_statuses), use_container_width=True, hide_index=True)
+        if processing_details.get("failed_chunk_count", 0) or processing_details.get("fallback_chunk_count", 0):
+            st.warning("以下分块处理失败或未充分覆盖，请查看上方状态表；系统已尽量用备用模块保留这些分块。")
+
     if modules:
         st.info(
-            f"检测到 {detected_sections} 个考试题/章节，已生成 {generated_sections} 个复习模块，"
+            f"检测到 {original_detected_sections} 个原始考试题/章节，拆分为 {detected_sections} 个处理分块，"
+            f"已生成 {generated_sections} 个复习模块，"
             f"覆盖率：{coverage_percent}%。"
         )
         if coverage.get("has_missing"):
@@ -3177,8 +3239,9 @@ if generate:
 
     with tab_coverage:
         st.subheader("覆盖率检查")
-        st.metric("检测到的问题/章节", detected_sections)
-        st.metric("实际生成的问题/章节", generated_sections)
+        st.metric("检测到的原始问题/章节", original_detected_sections)
+        st.metric("处理分块数", detected_sections)
+        st.metric("实际生成的复习模块", generated_sections)
         st.metric("覆盖率", f"{coverage_percent}%")
         if coverage.get("expected_sections"):
             st.metric("预期题目数量", coverage.get("expected_sections"))
