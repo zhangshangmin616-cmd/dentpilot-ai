@@ -226,6 +226,17 @@ def auth_debug_enabled() -> bool:
     return read_config_value("DENTPILOT_AUTH_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 
 
+def demo_login_enabled() -> bool:
+    return read_config_value("DENTPILOT_DEMO_LOGIN", "").lower() in {"1", "true", "yes", "on"}
+
+
+def get_demo_user() -> dict:
+    return {
+        "id": "local-demo-user",
+        "email": "demo@dentpilot.local",
+    }
+
+
 def record_auth_debug(**values) -> None:
     if not auth_debug_enabled():
         return
@@ -461,6 +472,11 @@ def load_auth_session() -> dict | None:
 
 
 def get_current_user() -> dict | None:
+    if demo_login_enabled():
+        user = get_demo_user()
+        st.session_state["auth_user"] = user
+        st.session_state["dentpilot_user"] = user
+        return user
     return load_auth_session()
 
 
