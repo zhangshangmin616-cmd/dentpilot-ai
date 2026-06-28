@@ -2,6 +2,7 @@ import os
 from html import escape
 
 import streamlit as st
+
 from ui_i18n import get_ui_text, normalize_lang
 
 
@@ -32,6 +33,40 @@ def render_realtime_oral_exam_page(lang: str = "zh"):
         "http://127.0.0.1"
     )
 
+    hero_copy = {
+        "en": "This is the realtime oral exam room, not a generic AI phone widget. Enter your topic and course content, choose English or Russian exam language, then start a focused oral exam.",
+        "ru": "Это комната устного экзамена, а не обычный AI-звонок. Введите тему и материал курса, выберите английский или русский язык экзамена и начните тренировку.",
+        "zh": "这是实时口试界面，不是通用 AI 电话窗口。输入口试主题和课程内容，选择英语或俄语口试，然后开始针对性训练。",
+    }
+    feature_cards_by_lang = {
+        "en": [
+            ("Professor avatar and exam room UI", "Feels closer to a real oral exam than a generic call window."),
+            ("Topic required before starting", "Avoids generic openings and keeps each session focused."),
+            ("Questions based on course content", "The AI professor asks and follows up around your material."),
+            ("English or Russian oral exam", "Practice answering aloud in the exam language you choose."),
+            ("Built for international medical/dental students", "UI and exam language can be selected separately."),
+        ],
+        "ru": [
+            ("AI-преподаватель и экзаменационная комната", "Ближе к реальному устному экзамену, чем обычный звонок с AI."),
+            ("Тема обязательна перед стартом", "Экзамен начинается по вашему материалу, а не с общего разговора."),
+            ("Вопросы по материалу курса", "AI-преподаватель задает вопросы и уточняет ответы по вашей теме."),
+            ("Английский или русский экзамен", "Тренируйте устные ответы на выбранном языке экзамена."),
+            ("Для иностранных студентов стоматологии и медицины", "Интерфейс и язык экзамена можно выбирать отдельно."),
+        ],
+        "zh": [
+            ("教授头像与真实口试房间界面", "更像真实考场，而不是通用电话窗口。"),
+            ("必须输入主题后才能开始", "避免泛泛开场，让每次口试都围绕你的主题。"),
+            ("AI 教授围绕课程内容提问", "根据课程主题和讲义内容展开提问与追问。"),
+            ("英语 / 俄语实时口试", "可以选择英语或俄语进行真实口头回答训练。"),
+            ("适合中国留学生", "界面语言和口试语言分开选择，降低操作负担。"),
+        ],
+    }
+    current_url_label = {
+        "en": "Current realtime oral exam app URL:",
+        "ru": "Текущий адрес приложения устного экзамена:",
+        "zh": "当前实时口试 App 地址：",
+    }
+
     st.markdown(
         f"""
         <section class="oral-app-hero">
@@ -40,35 +75,15 @@ def render_realtime_oral_exam_page(lang: str = "zh"):
                 {get_ui_text(lang, "realtime_oral_subtitle")}
             </p>
             <div class="oral-app-hero-card">
-                <p>
-                    {"This is the new realtime oral exam room, not a generic AI phone widget. Enter your topic and course content, then start a focused English oral exam." if lang == "en" else "这是新版实时口试界面，不再是通用 AI 电话窗口。你可以输入口试主题和课程内容，点击开始口试，AI 教授会根据你的内容提问、追问并给出反馈。"}
-                </p>
+                <p>{hero_copy.get(lang, hero_copy["zh"])}</p>
             </div>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
-    feature_cards = (
-        [
-            ("Professor avatar and exam room UI", "Feels closer to a real oral exam than a generic call window."),
-            ("Topic required before starting", "Avoids generic openings and keeps each session focused."),
-            ("Questions based on course content", "The AI professor asks and follows up around your material."),
-            ("Realtime English oral exam", "Practice answering aloud in English under oral exam pressure."),
-            ("Built for English-taught medical/dental students", "UI can be English while the oral exam remains English practice."),
-        ]
-        if lang == "en"
-        else [
-            ("教授头像与真实口试房间界面", "更像真实考场，而不是通用电话窗口。"),
-            ("必须输入主题后才能开始", "避免泛泛开场，让每次口试都围绕你的主题。"),
-            ("AI 教授围绕课程内容提问", "根据课程主题和讲义内容展开提问与追问。"),
-            ("实时英文口试与追问", "用英文口头回答，训练真实 oral exam 的表达节奏。"),
-            ("适合中国英授口腔/医学生", "中文入口降低操作负担，英文保留在考试训练中。"),
-        ]
-    )
-
     st.markdown('<div class="oral-app-feature-grid">', unsafe_allow_html=True)
-    for title, copy in feature_cards:
+    for title, copy in feature_cards_by_lang.get(lang, feature_cards_by_lang["zh"]):
         st.markdown(
             f"""
             <div class="oral-app-feature-card">
@@ -93,7 +108,7 @@ def render_realtime_oral_exam_page(lang: str = "zh"):
             "npm.cmd run dev"
         )
     else:
-        st.markdown("当前实时口试 App 地址：")
+        st.markdown(current_url_label.get(lang, current_url_label["zh"]))
         st.markdown(f"[{oral_app_url}]({escaped_oral_app_url})")
 
     st.markdown(

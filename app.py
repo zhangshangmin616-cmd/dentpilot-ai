@@ -92,7 +92,7 @@ SUBJECT_LABELS = dict(SUBJECT_OPTIONS)
 
 
 def format_subject_option(value: str) -> str:
-    if get_ui_lang() == "en":
+    if get_ui_lang() in {"en", "ru"}:
         return value
     return SUBJECT_LABELS.get(value, value)
 
@@ -125,7 +125,7 @@ def init_ui_language() -> None:
         if isinstance(query_lang, list):
             query_lang = query_lang[0] if query_lang else ""
         query_lang = normalize_lang(str(query_lang)) if query_lang else ""
-        if query_lang in {"zh", "en"}:
+        if query_lang in {"zh", "en", "ru"}:
             st.session_state["ui_lang"] = query_lang
             st.session_state["ui_lang_loaded"] = True
             return
@@ -139,7 +139,7 @@ def init_ui_language() -> None:
             ),
             key="ui_lang_load",
         )
-        if raw_value in {"zh", "en"} and "ui_lang_loaded" not in st.session_state:
+        if raw_value in {"zh", "en", "ru"} and "ui_lang_loaded" not in st.session_state:
             st.session_state["ui_lang"] = raw_value
             st.session_state["ui_lang_loaded"] = True
     except Exception:
@@ -148,7 +148,7 @@ def init_ui_language() -> None:
 
 def render_ui_language_selector() -> None:
     lang = get_ui_lang()
-    options = ["zh", "en"]
+    options = ["zh", "en", "ru"]
     selected = st.selectbox(
         t("ui_language"),
         options,
@@ -659,7 +659,8 @@ def render_my_learning_summary() -> None:
     try:
         summary = get_user_learning_summary()
     except Exception as exc:
-        st.error(f"无法读取学习记录：{exc}")
+        read_error_prefix = {"en": "Unable to read learning records", "ru": "Не удалось прочитать учебные записи", "zh": "无法读取学习记录"}
+        st.error(f"{read_error_prefix.get(get_ui_lang(), read_error_prefix['zh'])}：{exc}")
         return
 
     usage = summary.get("usage") or {}
@@ -669,24 +670,78 @@ def render_my_learning_summary() -> None:
     oral_records = summary.get("oral_exam_attempts") or []
     weaknesses = summary.get("weaknesses") or []
 
-    st.markdown("### 我的学习记录")
-    st.caption(f"今日口语用时：{float(usage.get('voice_minutes_used') or 0):.1f} 分钟")
+    labels = {
+        "en": {
+            "title": "### My Learning Records",
+            "voice": "Voice time today",
+            "minutes": "min",
+            "avg": "Recent average score",
+            "none": "None",
+            "records": "Records",
+            "study": "study packs",
+            "written": "written",
+            "case": "cases",
+            "oral": "oral",
+            "recent_written": "Recent written exam",
+            "recent_case": "Recent case",
+            "recent_oral": "Recent oral exam",
+            "weak": "Weak topics",
+            "empty": "No learning records yet. Start one training session first.",
+        },
+        "ru": {
+            "title": "### Мои учебные записи",
+            "voice": "Голосовое время сегодня",
+            "minutes": "мин",
+            "avg": "Недавний средний балл",
+            "none": "нет",
+            "records": "Записи",
+            "study": "пакеты",
+            "written": "письменные",
+            "case": "случаи",
+            "oral": "устные",
+            "recent_written": "Последняя письменная тренировка",
+            "recent_case": "Последний клинический случай",
+            "recent_oral": "Последний устный экзамен",
+            "weak": "Слабые темы",
+            "empty": "Учебных записей пока нет. Начните тренировку.",
+        },
+        "zh": {
+            "title": "### 我的学习记录",
+            "voice": "今日口语用时",
+            "minutes": "分钟",
+            "avg": "近期平均分",
+            "none": "暂无",
+            "records": "记录数",
+            "study": "复习包",
+            "written": "笔试",
+            "case": "病例",
+            "oral": "口试",
+            "recent_written": "最近笔试",
+            "recent_case": "最近病例",
+            "recent_oral": "最近口试",
+            "weak": "薄弱题目",
+            "empty": "还没有学习记录，先做一组训练吧。",
+        },
+    }.get(get_ui_lang(), {})
+
+    st.markdown(labels.get("title", "### 我的学习记录"))
+    st.caption(f"{labels.get('voice', '今日口语用时')}：{float(usage.get('voice_minutes_used') or 0):.1f} {labels.get('minutes', '分钟')}")
     average_score = summary.get("average_score")
-    st.caption(f"近期平均分：{average_score if average_score is not None else '暂无'}")
+    st.caption(f"{labels.get('avg', '近期平均分')}：{average_score if average_score is not None else labels.get('none', '暂无')}")
     st.caption(
-        f"记录数：复习包 {len(study_records)} / 笔试 {len(written_records)} / 病例 {len(clinical_records)} / 口试 {len(oral_records)}"
+        f"{labels.get('records', '记录数')}：{labels.get('study', '复习包')} {len(study_records)} / {labels.get('written', '笔试')} {len(written_records)} / {labels.get('case', '病例')} {len(clinical_records)} / {labels.get('oral', '口试')} {len(oral_records)}"
     )
     if written_records:
-        st.caption(f"最近笔试：{written_records[0].get('topic') or written_records[0].get('subject')}")
+        st.caption(f"{labels.get('recent_written', '最近笔试')}：{written_records[0].get('topic') or written_records[0].get('subject')}")
     if clinical_records:
-        st.caption(f"最近病例：{clinical_records[0].get('case_title') or 'Clinical case'}")
+        st.caption(f"{labels.get('recent_case', '最近病例')}：{clinical_records[0].get('case_title') or 'Clinical case'}")
     if oral_records:
-        st.caption(f"最近口试：{oral_records[0].get('topic') or oral_records[0].get('subject')}")
+        st.caption(f"{labels.get('recent_oral', '最近口试')}：{oral_records[0].get('topic') or oral_records[0].get('subject')}")
     if weaknesses:
         weak_topics = "，".join(str(item.get("topic", "")) for item in weaknesses[:3] if item.get("topic"))
-        st.caption(f"薄弱题目：{weak_topics or '暂无'}")
+        st.caption(f"{labels.get('weak', '薄弱题目')}：{weak_topics or labels.get('none', '暂无')}")
     if not any([study_records, written_records, clinical_records, oral_records]):
-        st.caption("还没有学习记录，先做一组训练吧。")
+        st.caption(labels.get("empty", "还没有学习记录，先做一组训练吧。"))
     st.markdown("---")
 
 
@@ -2929,11 +2984,12 @@ with st.sidebar:
     render_sidebar_account()
     render_admin_dashboard()
     st.markdown("## DentPilot AI")
-    st.caption(
-        "AI Study Assistant for English-Taught Dental/Medical Students"
-        if get_ui_lang() == "en"
-        else "面向中国留学生的英授牙科/医学学习助手"
-    )
+    sidebar_caption = {
+        "en": "AI Study Assistant for English-Taught Dental/Medical Students",
+        "ru": "AI-помощник для англоязычных стоматологических и медицинских программ",
+        "zh": "面向中国留学生的英授牙科/医学学习助手",
+    }
+    st.caption(sidebar_caption.get(get_ui_lang(), sidebar_caption["zh"]))
     st.markdown("---")
 
     mode_options = ["Study Pack", "AI Written Exam", "Clinical Case", "Weakness Analysis", "Realtime Oral Exam"]
@@ -2953,23 +3009,55 @@ with st.sidebar:
     )
     save_selected_mode(MODE_LABEL_TO_KEY.get(mode, "study_pack"))
 
-    mode_descriptions = {
-        "Study Pack": "Upload course materials and generate study packs, quizzes, and Anki cards." if get_ui_lang() == "en" else "上传课程材料，自动生成复习包、Quiz 和 Anki 卡片。",
-        "AI Written Exam": "Generate school-style written exam questions with scoring and feedback." if get_ui_lang() == "en" else "按模式/题型生成学校风格写作题，并给出详细评分与错题反馈。",
-        "Clinical Case": "Practice clinical diagnosis and treatment planning with case questions." if get_ui_lang() == "en" else "基于案例的口腔临床诊断与治疗问答训练。",
-        "Weakness Analysis": "Analyze practice history and generate short-term revision suggestions." if get_ui_lang() == "en" else "基于历史记录分析薄弱环节，给出短期训练建议。",
-        "Realtime Oral Exam": "Open the standalone realtime oral exam room." if get_ui_lang() == "en" else "实时口语练习与对话反馈（独立应用会话入口）。",
+    mode_descriptions_by_lang = {
+        "en": {
+            "Study Pack": "Upload course materials and generate study packs, quizzes, and Anki cards.",
+            "AI Written Exam": "Generate school-style written exam questions with scoring and feedback.",
+            "Clinical Case": "Practice clinical diagnosis and treatment planning with case questions.",
+            "Weakness Analysis": "Analyze practice history and generate short-term revision suggestions.",
+            "Realtime Oral Exam": "Open the standalone realtime oral exam room.",
+        },
+        "ru": {
+            "Study Pack": "Загрузите материалы курса и создайте учебный пакет, тесты и Anki-карточки.",
+            "AI Written Exam": "Создавайте письменные экзаменационные вопросы с оценкой и обратной связью.",
+            "Clinical Case": "Тренируйте диагностику и план лечения на клинических случаях.",
+            "Weakness Analysis": "Анализируйте историю тренировок и получайте короткий план повторения.",
+            "Realtime Oral Exam": "Откройте отдельную комнату устного экзамена в реальном времени.",
+        },
+        "zh": {
+            "Study Pack": "上传课程材料，自动生成复习包、Quiz 和 Anki 卡片。",
+            "AI Written Exam": "按模式/题型生成学校风格写作题，并给出详细评分与错题反馈。",
+            "Clinical Case": "基于案例的口腔临床诊断与治疗问答训练。",
+            "Weakness Analysis": "基于历史记录分析薄弱环节，给出短期训练建议。",
+            "Realtime Oral Exam": "实时口语练习与对话反馈（独立应用会话入口）。",
+        },
     }
+    mode_descriptions = mode_descriptions_by_lang.get(get_ui_lang(), mode_descriptions_by_lang["zh"])
 
-    st.markdown("### Current Mode" if get_ui_lang() == "en" else "### 当前模式")
+    current_mode_title = {"en": "### Current Mode", "ru": "### Текущий режим", "zh": "### 当前模式"}
+    st.markdown(current_mode_title.get(get_ui_lang(), current_mode_title["zh"]))
     st.write(mode_descriptions.get(mode, "DentPilot AI 功能模块"))
 
     if mode != "Realtime Oral Exam":
         st.markdown("---")
+        ai_status_text = {
+            "en": {
+                "ok": "AI service: enabled",
+                "missing": "AI service is not configured: please set DeepSeek API Key.",
+            },
+            "ru": {
+                "ok": "AI-сервис: включен",
+                "missing": "AI-сервис не настроен: добавьте DeepSeek API Key.",
+            },
+            "zh": {
+                "ok": "AI 服务配置：已启用",
+                "missing": "AI 服务未配置：请在环境变量中设置 DeepSeek API Key。",
+            },
+        }.get(get_ui_lang(), {})
         if read_config_value("DEEPSEEK_API_KEY"):
-            st.caption("AI 服务配置：已启用")
+            st.caption(ai_status_text.get("ok", "AI 服务配置：已启用"))
         else:
-            st.caption("AI 服务未配置：请在环境变量中设置 DeepSeek API Key。")
+            st.caption(ai_status_text.get("missing", "AI 服务未配置：请在环境变量中设置 DeepSeek API Key。"))
 
 
     st.markdown("---")

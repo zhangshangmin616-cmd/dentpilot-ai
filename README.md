@@ -122,6 +122,12 @@ ELEVENLABS_STT_MODEL=scribe_v2
 
 The realtime oral exam is now a separate Next.js app. The Streamlit page opens it in a new tab instead of embedding the old ElevenLabs widget, which keeps microphone permissions more stable.
 
+The realtime oral exam supports:
+- UI language: Chinese, English, Russian
+- Exam language: English or Russian
+
+The Next.js app sends `exam_language` and `exam_language_instruction` to the ElevenLabs agent as dynamic variables. Update the ElevenLabs Agent system prompt with `ELEVENLABS_AGENT_PROMPT.md` so the professor uses the selected oral exam language.
+
 Local:
 
 ```env

@@ -39,7 +39,11 @@ Realtime Oral Exam Simulator
 
 Stop rereading notes. Train like a real oral exam.
 
-The AI professor will ask you questions, listen to your English answer, challenge your reasoning, and give feedback.
+The AI professor will ask questions, listen to your answer, challenge your reasoning, and give feedback in the selected exam language.
+
+Supported languages:
+- UI: Chinese, English, Russian
+- Oral exam professor: English or Russian
 
 ## Notes
 
@@ -51,4 +55,4 @@ The AI professor will ask you questions, listen to your English answer, challeng
 - No generic support call UI
 - No ElevenLabs API key exposed in the browser
 
-The ElevenLabs agent should already have the oral examiner system prompt configured in the ElevenLabs dashboard.
+The ElevenLabs agent should already have the oral examiner system prompt configured in the ElevenLabs dashboard. Use the root `ELEVENLABS_AGENT_PROMPT.md` so the agent reads `exam_language` and starts the oral exam in English or Russian.
