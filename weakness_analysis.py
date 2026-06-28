@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 
-load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True, encoding="utf-8-sig")
 
 
 class WeaknessAnalysisError(Exception):

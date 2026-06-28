@@ -10,7 +10,7 @@ from openai import OpenAI
 from glossary import STARTER_GLOSSARY
 
 
-load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True, encoding="utf-8-sig")
 
 
 def clean_text(text: str) -> str:

@@ -56,7 +56,7 @@ from weakness_analysis import (
 )
 
 
-load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True, encoding="utf-8-sig")
 
 
 SUPABASE_AUTH_URL = "https://nakkcdzpxdggirujgmtk.supabase.co/auth/v1"
@@ -235,6 +235,55 @@ def get_demo_user() -> dict:
         "id": "local-demo-user",
         "email": "demo@dentpilot.local",
     }
+
+
+def start_demo_login() -> None:
+    user = get_demo_user()
+    st.session_state["auth_user"] = user
+    st.session_state["dentpilot_user"] = user
+    st.session_state["auth_session"] = {
+        "access_token": "demo-access-token",
+        "refresh_token": "demo-refresh-token",
+        "expires_at": int(time.time()) + 7 * 24 * 60 * 60,
+        "user": user,
+        "is_demo": True,
+    }
+    st.session_state["dentpilot_access_token"] = "demo-access-token"
+    st.session_state["dentpilot_refresh_token"] = "demo-refresh-token"
+    st.session_state["dentpilot_expires_at"] = int(time.time()) + 7 * 24 * 60 * 60
+
+
+def is_demo_session() -> bool:
+    auth_session = st.session_state.get("auth_session") or {}
+    return bool(auth_session.get("is_demo"))
+
+
+def demo_supabase_rest_request(method: str, table: str, payload=None):
+    demo_tables = st.session_state.setdefault("demo_supabase_tables", {})
+    rows = demo_tables.setdefault(table, [])
+    request_method = method.upper()
+
+    if request_method == "GET":
+        return list(rows)
+
+    if request_method == "POST":
+        row = dict(payload or {})
+        row.setdefault("id", f"demo-{table}-{len(rows) + 1}")
+        row.setdefault("user_id", get_demo_user()["id"])
+        row.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
+        rows.insert(0, row)
+        return [row]
+
+    if request_method == "PATCH":
+        if not rows:
+            return []
+        rows[0].update(payload or {})
+        return [rows[0]]
+
+    if request_method == "DELETE":
+        return []
+
+    return None
 
 
 def record_auth_debug(**values) -> None:
@@ -473,10 +522,8 @@ def load_auth_session() -> dict | None:
 
 def get_current_user() -> dict | None:
     if demo_login_enabled():
-        user = get_demo_user()
-        st.session_state["auth_user"] = user
-        st.session_state["dentpilot_user"] = user
-        return user
+        start_demo_login()
+        return get_demo_user()
     return load_auth_session()
 
 
@@ -533,6 +580,14 @@ def render_auth_gate() -> None:
         st.warning(expired_message)
 
     render_auth_debug()
+
+    st.markdown("### 学校演示入口")
+    st.caption("如果 Supabase 项目暂停或现场网络不稳定，可以先用演示账号进入系统。正式用户登录功能保留在下方。")
+    if st.button("进入 DentPilot AI 演示账号", type="primary", use_container_width=True):
+        start_demo_login()
+        st.success("已进入演示账号。")
+        st.rerun()
+    st.markdown("---")
 
     login_tab, register_tab = st.tabs([t("login"), t("register")])
     with login_tab:
@@ -765,6 +820,9 @@ def supabase_rest_url(table: str, query: str = "") -> str:
 
 
 def supabase_rest_request(method: str, table: str, query: str = "", payload=None):
+    if is_demo_session():
+        return demo_supabase_rest_request(method, table, payload)
+
     token = current_access_token()
     headers = get_auth_headers(token)
     headers["Accept"] = "application/json"
@@ -2892,7 +2950,7 @@ with st.sidebar:
 
     if mode != "Realtime Oral Exam":
         st.markdown("---")
-        if os.getenv("DEEPSEEK_API_KEY"):
+        if read_config_value("DEEPSEEK_API_KEY"):
             st.caption("AI 服务配置：已启用")
         else:
             st.caption("AI 服务未配置：请在环境变量中设置 DeepSeek API Key。")
