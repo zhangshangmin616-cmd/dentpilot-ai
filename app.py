@@ -237,6 +237,16 @@ def get_demo_user() -> dict:
     }
 
 
+def is_auth_error_message(message: str) -> bool:
+    lowered = (message or "").lower()
+    return (
+        "invalid user session" in lowered
+        or "jwt" in lowered
+        or "expired" in lowered
+        or "unauthorized" in lowered
+    )
+
+
 def start_demo_login() -> None:
     user = get_demo_user()
     st.session_state["auth_user"] = user
@@ -485,6 +495,8 @@ def refresh_supabase_session_if_needed(payload: dict) -> dict | None:
             st.session_state["dentpilot_session_expired_message"] = "\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002"
             return None
 
+    clear_auth_session()
+    st.session_state["dentpilot_session_expired_message"] = "\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002"
     return None
 
 
@@ -842,6 +854,10 @@ def supabase_rest_request(method: str, table: str, query: str = "", payload=None
         except Exception:
             data = {}
         message = data.get("message") or data.get("details") or data.get("hint") or response.text
+        if response.status_code in {401, 403} or is_auth_error_message(str(message)):
+            clear_auth_session()
+            st.session_state["dentpilot_session_expired_message"] = "\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002"
+            raise RuntimeError("\u767b\u5f55\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002")
         raise RuntimeError(message)
     if not response.content:
         return None
